@@ -16,7 +16,12 @@ import { resolveConfig, type ResolvedWorkflowConfig } from '../../src/config/res
 import type { LinearGateway } from '../../src/linear/gateway.js';
 import type { Issue } from '../../src/linear/issue.js';
 import type { WorkspaceManager } from '../../src/workspace/manager.js';
-import { Orchestrator, type OrchestratorEvent } from '../../src/orchestrator/orchestrator.js';
+import {
+  Orchestrator,
+  isBlocked,
+  sortCandidates,
+  type OrchestratorEvent,
+} from '../../src/orchestrator/orchestrator.js';
 
 function makeIssue(overrides: Partial<Issue> & Pick<Issue, 'id' | 'identifier'>): Issue {
   return {
@@ -725,6 +730,121 @@ describe('Orchestrator.tick — failure handling', () => {
     const tickEnd = fakes.events.find((e) => e.type === 'tick_completed');
     expect(tickEnd?.error).toMatch(/rate limited/);
     expect(fakes.workspaceCalls).toEqual([]);
+  });
+});
+
+describe('sortCandidates', () => {
+  it('orders by priority asc, then created_at asc, then identifier', () => {
+    const result = sortCandidates([
+      makeIssue({ id: 'i3', identifier: 'CHR-3', priority: 2, createdAt: '2026-04-01T00:00:00Z' }),
+      makeIssue({ id: 'i1', identifier: 'CHR-1', priority: 1, createdAt: '2026-04-02T00:00:00Z' }),
+      makeIssue({ id: 'i4', identifier: 'CHR-4', priority: null, createdAt: '2026-04-01T00:00:00Z' }),
+      makeIssue({ id: 'i2', identifier: 'CHR-2', priority: 1, createdAt: '2026-04-01T00:00:00Z' }),
+    ]);
+    expect(result.map((i) => i.identifier)).toEqual(['CHR-2', 'CHR-1', 'CHR-3', 'CHR-4']);
+  });
+
+  it('places null createdAt after dated ones', () => {
+    const result = sortCandidates([
+      makeIssue({ id: 'a', identifier: 'CHR-A', priority: 1, createdAt: null }),
+      makeIssue({ id: 'b', identifier: 'CHR-B', priority: 1, createdAt: '2026-04-01T00:00:00Z' }),
+    ]);
+    expect(result.map((i) => i.identifier)).toEqual(['CHR-B', 'CHR-A']);
+  });
+});
+
+describe('isBlocked', () => {
+  const TERMINAL = new Set(['Done', 'Cancelled']);
+
+  it('does not gate non-Todo issues even with non-terminal blockers', () => {
+    const issue = makeIssue({
+      id: 'a',
+      identifier: 'CHR-A',
+      state: 'In Progress',
+      blockedBy: [{ id: 'x', identifier: 'CHR-X', state: 'Todo' }],
+    });
+    expect(isBlocked(issue, TERMINAL)).toBe(false);
+  });
+
+  it('gates Todo issues with at least one non-terminal blocker', () => {
+    const issue = makeIssue({
+      id: 'a',
+      identifier: 'CHR-A',
+      state: 'Todo',
+      blockedBy: [
+        { id: 'x', identifier: 'CHR-X', state: 'Done' },
+        { id: 'y', identifier: 'CHR-Y', state: 'Todo' },
+      ],
+    });
+    expect(isBlocked(issue, TERMINAL)).toBe(true);
+  });
+
+  it('does not gate Todo issues whose blockers are all terminal', () => {
+    const issue = makeIssue({
+      id: 'a',
+      identifier: 'CHR-A',
+      state: 'Todo',
+      blockedBy: [
+        { id: 'x', identifier: 'CHR-X', state: 'Done' },
+        { id: 'y', identifier: 'CHR-Y', state: 'Cancelled' },
+      ],
+    });
+    expect(isBlocked(issue, TERMINAL)).toBe(false);
+  });
+
+  it('fails safe (treated as blocked) when a blocker has unknown state', () => {
+    const issue = makeIssue({
+      id: 'a',
+      identifier: 'CHR-A',
+      state: 'Todo',
+      blockedBy: [{ id: 'x', identifier: 'CHR-X', state: null }],
+    });
+    expect(isBlocked(issue, TERMINAL)).toBe(true);
+  });
+});
+
+describe('Orchestrator.tick — blocker gate + sort integration', () => {
+  it('dispatches in priority/createdAt order and skips a blocked Todo', async () => {
+    const candidates = [
+      makeIssue({
+        id: 'low',
+        identifier: 'CHR-LOW',
+        state: 'Todo',
+        priority: 3,
+        createdAt: '2026-04-01T00:00:00Z',
+      }),
+      makeIssue({
+        id: 'blk',
+        identifier: 'CHR-BLK',
+        state: 'Todo',
+        priority: 1,
+        createdAt: '2026-04-01T00:00:00Z',
+        blockedBy: [{ id: 'b', identifier: 'CHR-B', state: 'Todo' }],
+      }),
+      makeIssue({
+        id: 'top',
+        identifier: 'CHR-TOP',
+        state: 'Todo',
+        priority: 2,
+        createdAt: '2026-04-01T00:00:00Z',
+      }),
+    ];
+    const fakes = buildFakes({ candidates, postSuccessLinearState: 'Done' });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig({ maxConcurrent: 5 }),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+
+    // Blocked Todo dropped; remaining sorted by priority: TOP (2) then LOW (3).
+    expect(fakes.workspaceCalls).toEqual(['CHR-TOP', 'CHR-LOW']);
   });
 });
 

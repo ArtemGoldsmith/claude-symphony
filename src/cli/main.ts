@@ -122,7 +122,11 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
   const linearClient = deps.linearClientFactory
     ? deps.linearClientFactory(resolved.tracker.api_key)
     : new LinearClient({ apiKey: resolved.tracker.api_key });
-  const linearGateway = createLinearGateway(linearClient);
+  // resolveBlockers populates Issue.blockedBy on every fetch so the
+  // orchestrator can gate Todo issues with non-terminal blockers (B6).
+  // Each issue costs one extra Linear roundtrip to resolve; acceptable for
+  // single-host MVP, would be a knob in Phase 3.
+  const linearGateway = createLinearGateway(linearClient, { resolveBlockers: true });
 
   const workspaceManager = new WorkspaceManager({
     root: resolved.workspace.root,

@@ -75,6 +75,43 @@ export interface OrchestratorDeps {
 import { OrchestratorState } from './state.js';
 
 /**
+ * Sort candidate issues per SPEC.md §8.2: priority ascending (lower number =
+ * higher priority; null priorities sort last), then created_at ascending so
+ * older issues lead, with identifier as a deterministic tiebreaker.
+ */
+export function sortCandidates(issues: Issue[]): Issue[] {
+  return [...issues].sort((a, b) => {
+    const pa = a.priority ?? Number.MAX_SAFE_INTEGER;
+    const pb = b.priority ?? Number.MAX_SAFE_INTEGER;
+    if (pa !== pb) return pa - pb;
+    if (a.createdAt !== null && b.createdAt !== null) {
+      const cmp = a.createdAt.localeCompare(b.createdAt);
+      if (cmp !== 0) return cmp;
+    } else if (a.createdAt !== null && b.createdAt === null) {
+      return -1;
+    } else if (a.createdAt === null && b.createdAt !== null) {
+      return 1;
+    }
+    return a.identifier.localeCompare(b.identifier);
+  });
+}
+
+/**
+ * Per SPEC.md §8.2: a `Todo` issue is NOT eligible for dispatch while any of
+ * its blocker references is still in a non-terminal state. Issues already in
+ * progress are not gated — they may have been started before a blocker
+ * appeared and the agent should be able to keep working.
+ */
+export function isBlocked(issue: Issue, terminalStates: ReadonlySet<string>): boolean {
+  if (issue.state !== 'Todo') return false;
+  for (const blocker of issue.blockedBy) {
+    if (blocker.state === null) return true; // unknown state — fail safe
+    if (!terminalStates.has(blocker.state)) return true;
+  }
+  return false;
+}
+
+/**
  * Exponential backoff schedule for consecutive dispatch failures. Indexed by
  * failureCount-1: the first failure waits 30 s, the second 2 min, the third
  * 8 min, the fourth 30 min. After RETRY_DELAYS_MS.length consecutive
@@ -182,8 +219,14 @@ export class Orchestrator {
       return;
     }
 
+    const terminalStates: ReadonlySet<string> = new Set(
+      this.deps.config.tracker.terminal_states,
+    );
+    const sorted = sortCandidates(candidates);
+    const dispatchable = sorted.filter((issue) => !isBlocked(issue, terminalStates));
+
     const cap = this.deps.config.agent.max_concurrent_agents;
-    for (const issue of candidates) {
+    for (const issue of dispatchable) {
       if (this.state.busyCount() >= cap) break;
       if (this.state.isBusy(issue.id)) continue;
       if (this.state.stateOf(issue.id) === 'completed') continue;
