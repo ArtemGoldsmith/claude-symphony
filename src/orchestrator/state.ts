@@ -63,6 +63,43 @@ export class OrchestratorState {
     this.sessionIds.delete(issueId);
   }
 
+  /**
+   * AbortControllers (with the issue identifier we need to refresh against
+   * Linear) for in-flight dispatches. Reconciliation aborts these when
+   * Linear state moves out of active during a run (SPEC.md §8.5).
+   */
+  private readonly inflightDispatches = new Map<
+    string,
+    { controller: AbortController; identifier: string }
+  >();
+
+  registerInflight(
+    issueId: string,
+    identifier: string,
+    controller: AbortController,
+  ): void {
+    this.inflightDispatches.set(issueId, { controller, identifier });
+  }
+
+  inflightFor(
+    issueId: string,
+  ): { controller: AbortController; identifier: string } | null {
+    return this.inflightDispatches.get(issueId) ?? null;
+  }
+
+  clearInflight(issueId: string): void {
+    this.inflightDispatches.delete(issueId);
+  }
+
+  /** Snapshot of issue ids currently busy (claimed or running). */
+  busyIssueIds(): string[] {
+    const ids: string[] = [];
+    for (const [id, s] of this.states.entries()) {
+      if (s === 'claimed' || s === 'running') ids.push(id);
+    }
+    return ids;
+  }
+
   claim(issueId: string): void {
     this.states.set(issueId, 'claimed');
     this.retries.delete(issueId);

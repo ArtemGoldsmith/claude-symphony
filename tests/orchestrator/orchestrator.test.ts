@@ -358,6 +358,87 @@ describe('Orchestrator.tick — Symphony continuation semantics', () => {
     expect(fakes.agentInputs[1]?.prompt).toMatch(/dispatch attempt #2/);
   });
 
+  it('aborts the in-flight agent when Linear state goes terminal mid-run', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    let abortObserved = false;
+    // Slow agent that yields control briefly so reconcile can run while the
+    // dispatch is in flight.
+    const slowAgent = (input: AgentRunInput): AgentRunResult => {
+      // Caller actually awaits this synchronously via vi.fn — we need an
+      // async runner here to give reconcile a chance. Build via a custom
+      // queryFn instead.
+      void input;
+      return {
+        exitReason: 'aborted_externally',
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          totalCostUsd: null,
+        },
+        durationMs: 5,
+        finalText: '',
+        numTurns: null,
+        errorMessage: null,
+        sessionId: null,
+      };
+    };
+    const fakes = buildFakes({ candidates, agentResult: slowAgent });
+    // Wrap the runner so we capture whether the externalAbort signal was
+    // ever raised before the run "completed".
+    fakes.agent.run = vi.fn(async (input: AgentRunInput) => {
+      // Simulate a long-running agent: wait until reconcile aborts us.
+      await new Promise<void>((resolve) => {
+        const sig = input.externalAbort;
+        if (sig?.aborted) {
+          abortObserved = true;
+          resolve();
+          return;
+        }
+        sig?.addEventListener(
+          'abort',
+          () => {
+            abortObserved = true;
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      return slowAgent(input);
+    });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    // Tick 1: dispatches CHR-1; the slow agent registers inflight and
+    // blocks waiting for an abort. Linear state is still 'Todo', so the
+    // reconcile pass at the end of tick 1 sees nothing to abort.
+    await orchestrator.tick();
+    expect(orchestrator.state.inflightFor('i1')).not.toBeNull();
+
+    // Operator moves Linear to Cancelled while the agent is still working.
+    fakes.linearStates.set('CHR-1', 'Cancelled');
+
+    // Tick 2: reconcile now sees the terminal state and aborts the inflight.
+    // The aborted dispatch resolves, drain returns, and the issue is marked
+    // completed (the agent's responsibility ended when the operator cancelled).
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+
+    expect(abortObserved).toBe(true);
+    expect(orchestrator.state.stateOf('i1')).toBe('completed');
+    const reconcile = fakes.events.find((e) => e.type === 'reconcile_aborted');
+    expect(reconcile).toBeDefined();
+    expect(reconcile?.linearStateAfterRun).toBe('Cancelled');
+  });
+
   it('clears the captured session_id when the issue reaches a terminal state', async () => {
     const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
     const fakes = buildFakes({ candidates });

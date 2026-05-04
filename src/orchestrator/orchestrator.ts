@@ -30,6 +30,7 @@ export interface OrchestratorEvent {
     | 'continuation_scheduled'
     | 'retry_scheduled'
     | 'retry_skipped'
+    | 'reconcile_aborted'
     | 'agent_stderr';
   at: number;
   issueId?: string;
@@ -40,6 +41,8 @@ export interface OrchestratorEvent {
   /**
    * When type === 'continuation_scheduled', the Linear state the issue was in
    * at the time the orchestrator decided the agent's job wasn't done yet.
+   * When type === 'reconcile_aborted', the Linear state at the moment the
+   * orchestrator decided the in-flight run should be aborted.
    */
   linearStateAfterRun?: string;
   /** Raw stderr chunk from the agent subprocess, when type is 'agent_stderr'. */
@@ -150,7 +153,47 @@ export class Orchestrator {
       this.state.trackInflight(this.dispatchOne(issue));
     }
 
+    await this.reconcileRunningDispatches();
+
     this.emit({ type: 'tick_completed', at: this.deps.now?.() ?? Date.now() });
+  }
+
+  /**
+   * For each in-flight dispatch, fetch the current Linear state and abort
+   * the agent if the issue has moved out of active_states (SPEC.md §8.5).
+   * Errors fetching individual issues are tolerated — we'd rather not abort
+   * a run on transient Linear flakiness.
+   */
+  private async reconcileRunningDispatches(): Promise<void> {
+    const ids = this.state.busyIssueIds();
+    if (ids.length === 0) return;
+    const activeStates = new Set(this.deps.config.tracker.active_states);
+
+    await Promise.all(
+      ids.map(async (issueId) => {
+        const inflight = this.state.inflightFor(issueId);
+        if (inflight === null || inflight.controller.signal.aborted) return;
+
+        let refreshed;
+        try {
+          refreshed = await this.deps.linear.fetchIssueByIdentifier(inflight.identifier);
+        } catch {
+          return; // tolerate transient errors
+        }
+
+        if (refreshed === null || !activeStates.has(refreshed.state)) {
+          const at = this.deps.now?.() ?? Date.now();
+          this.emit({
+            type: 'reconcile_aborted',
+            at,
+            issueId,
+            issueIdentifier: inflight.identifier,
+            linearStateAfterRun: refreshed?.state,
+          });
+          inflight.controller.abort();
+        }
+      }),
+    );
   }
 
   private async dispatchOne(issue: Issue): Promise<void> {
@@ -163,6 +206,11 @@ export class Orchestrator {
     });
 
     this.state.markRunning(issue.id);
+
+    // External abort plumbed through to the agent runner so reconcile (and
+    // future stop-on-shutdown) can interrupt this dispatch.
+    const externalAbort = new AbortController();
+    this.state.registerInflight(issue.id, issue.identifier, externalAbort);
 
     try {
       const ws = await this.deps.workspace.ensureWorkspace(issue);
@@ -179,6 +227,7 @@ export class Orchestrator {
         prompt,
         config: this.deps.config.claude,
         resumeSessionId,
+        externalAbort: externalAbort.signal,
         onStderr: (chunk) => {
           this.emit({
             type: 'agent_stderr',
@@ -196,11 +245,26 @@ export class Orchestrator {
 
       if (result.exitReason === 'completed') {
         await this.handleSuccess(issue, result);
+      } else if (result.exitReason === 'aborted_externally') {
+        // Reconcile has already aborted because Linear moved to a terminal
+        // state. Treat as completed — the work is no longer the agent's
+        // responsibility. handleSuccess would otherwise re-fetch Linear,
+        // which is wasteful when reconcile just did exactly that.
+        this.state.markCompleted(issue.id);
+        this.emit({
+          type: 'dispatch_completed',
+          at: this.deps.now?.() ?? Date.now(),
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+          result,
+        });
       } else {
         this.handleFailure(issue, result.errorMessage ?? `agent ${result.exitReason}`);
       }
     } catch (err) {
       this.handleFailure(issue, (err as Error).message);
+    } finally {
+      this.state.clearInflight(issue.id);
     }
   }
 

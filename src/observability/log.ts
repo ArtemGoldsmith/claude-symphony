@@ -98,6 +98,13 @@ export function writeOrchestratorEvent(logger: Logger, event: OrchestratorEvent)
       logger.warn({ ...base, error: event.error }, `failed ${event.issueIdentifier}`);
       break;
 
+    case 'reconcile_aborted':
+      logger.warn(
+        { ...base, linearStateAfterRun: event.linearStateAfterRun },
+        `aborting in-flight ${event.issueIdentifier} (Linear state changed mid-run)`,
+      );
+      break;
+
     case 'continuation_scheduled':
       logger.info(
         {
