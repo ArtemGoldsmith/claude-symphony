@@ -122,7 +122,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §11.2 Query semantics | ✅ | `src/linear/client.ts` | `project: { slugId: { eq } }` + `state.name.in`; page size 50; full pagination |
 | §11.3 Normalization rules | ✅ | `src/linear/adapter.ts` | Lowercase labels, integer-only priority, ISO-8601 re-emission, blocked_by from inverse `blocks` relations |
 | §11.4 Error handling contract | 🟡 Phase 1 | `src/linear/{client,gateway}.ts` | Single `LinearTrackerError` wrapping SDK errors via native `cause`; finer-grained classes deferred |
-| §11.5 Tracker writes (boundary) | 🟡 deviation | (agent-side) | Linear MCP server replaces `linear_graphql` tool — `SPEC-claude.md` §D |
+| §11.5 Tracker writes (boundary) | ✅ deviation | `src/agent/symphony-linear-server.ts`, `src/linear/writes.ts` | In-process `symphony_linear` MCP server gives the agent a 6-tool stable contract (get_current_issue, get_workpad, create_or_update_workpad, transition_state, attach_pr_url, post_comment) closure-bound to the dispatched issue. Public Linear MCP also wired for general access — see `SPEC-claude.md` §D |
 
 ## §12. Prompt Construction and Context Assembly
 | Spec | Status | Module | Notes |

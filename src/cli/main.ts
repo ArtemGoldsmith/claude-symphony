@@ -11,6 +11,7 @@ import { resolveConfig } from '../config/resolve.js';
 import { preflightConfig } from '../config/preflight.js';
 import { loadWorkflow } from '../workflow/loader.js';
 import { createLinearGateway } from '../linear/client.js';
+import { createLinearWriteGateway } from '../linear/writes.js';
 import { WorkspaceManager } from '../workspace/manager.js';
 import { AgentRunner, createSdkQueryFactory, type QueryFactory } from '../agent/runner.js';
 import { Orchestrator } from '../orchestrator/orchestrator.js';
@@ -130,6 +131,10 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
   // Each issue costs one extra Linear roundtrip to resolve; acceptable for
   // single-host MVP, would be a knob in Phase 3.
   const linearGateway = createLinearGateway(linearClient, { resolveBlockers: true });
+  // Same LinearClient also drives the in-process symphony_linear MCP server
+  // (B7): the API key needs Read + Write scope. Configured in Linear under
+  // Settings → Security & access → Personal API keys.
+  const linearWriteGateway = createLinearWriteGateway(linearClient);
 
   const workspaceManager = new WorkspaceManager({
     root: resolved.workspace.root,
@@ -142,6 +147,7 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
 
   const orchestrator = new Orchestrator({
     linear: linearGateway,
+    linearWrites: linearWriteGateway,
     workspace: workspaceManager,
     agent: agentRunner,
     promptTemplate: definition.promptTemplate,

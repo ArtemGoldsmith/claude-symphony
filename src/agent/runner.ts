@@ -123,6 +123,13 @@ export interface AgentRunInput {
    * context instead of re-discovering everything from scratch.
    */
   resumeSessionId?: string;
+  /**
+   * Per-dispatch MCP server entries merged into options.mcpServers. Used by
+   * the orchestrator to inject the in-process `symphony_linear` server
+   * (closure-bound to the current issue) on top of whatever the user
+   * configured in WORKFLOW.md.
+   */
+  dispatchMcpServers?: Record<string, unknown>;
 }
 
 export interface AgentRunResult {
@@ -156,11 +163,15 @@ const ZERO_USAGE: AggregatedUsage = {
  */
 export function buildQueryOptions(input: AgentRunInput, abort: AbortController): QueryOptions {
   const cfg = input.config;
+  const mergedMcpServers: Record<string, unknown> = {
+    ...cfg.mcp_servers,
+    ...(input.dispatchMcpServers ?? {}),
+  };
   const opts: QueryOptions = {
     cwd: input.workspacePath,
     permissionMode: cfg.permission_mode,
     disallowedTools: cfg.disallowed_tools,
-    mcpServers: cfg.mcp_servers,
+    mcpServers: mergedMcpServers,
     maxTurns: cfg.max_turns,
     abortController: abort,
   };

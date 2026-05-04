@@ -6,6 +6,39 @@
 
 import type { Issue } from './issue.js';
 
+/**
+ * Linear write surface used by the in-process `symphony_linear` MCP server
+ * (see src/agent/symphony-linear-server.ts). Kept independent of @linear/sdk
+ * types so unit tests can stub it cleanly.
+ */
+export interface LinearWriteGateway {
+  /** Re-fetch an issue (used by get_current_issue tool). */
+  fetchIssueByIdentifier(identifier: string): Promise<Issue | null>;
+
+  /** Return all non-deleted comments on an issue, oldest first. */
+  listComments(issueId: string): Promise<ReadonlyArray<{ id: string; body: string }>>;
+
+  /** Post a fresh comment. Returns the created comment's id. */
+  createComment(args: { issueId: string; body: string }): Promise<{ id: string }>;
+
+  /** Replace the body of an existing comment. */
+  updateComment(args: { commentId: string; body: string }): Promise<void>;
+
+  /**
+   * Resolve a workflow state name (e.g. "Human Review") to its GraphQL id
+   * within the given team. Returns null if no state matches. Names are
+   * case-sensitive; the agent passes the same name the operator sees in
+   * Linear.
+   */
+  findWorkflowStateId(args: { teamKey: string; stateName: string }): Promise<string | null>;
+
+  /** Move an issue to the given workflow state id. */
+  updateIssueState(args: { issueId: string; stateId: string }): Promise<void>;
+
+  /** Attach an external URL (e.g. a PR) to an issue. */
+  createAttachment(args: { issueId: string; url: string; title?: string }): Promise<void>;
+}
+
 export interface LinearGateway {
   /**
    * Fetch all candidate issues for the project that are currently in any of

@@ -108,9 +108,24 @@ claude:
   # project-wide rules without editing the per-issue prompt body below.
   system_prompt_append: |
     Repo conventions:
-    - This is the Chronicle Nx monorepo (TypeScript ESM). Use `pnpm` for everything.
-    - Run `pnpm test` and `pnpm typecheck` before declaring work done.
-    - Keep changes minimal and reversible. Prefer surgical edits over rewrites.
+    - This is the Chronicle Nx monorepo (TypeScript). Use the package
+      manager declared in the repo's package.json (npm or pnpm).
+    - Touched code under apps/<name>: run scoped tests + lint before
+      declaring done (e.g. `npx nx test <name>`, `npx nx lint <name>`).
+    - Keep changes minimal and reversible. Prefer surgical edits over
+      rewrites.
+
+    Linear workflow tools (claude-symphony's stable contract — prefer
+    these over the public Linear MCP for the operations they cover):
+    - mcp__symphony_linear__get_current_issue: refresh the issue snapshot.
+    - mcp__symphony_linear__get_workpad / create_or_update_workpad:
+      coordinate via a single "## Codex Workpad" comment; never make a
+      second one.
+    - mcp__symphony_linear__transition_state(name): move to "Human Review",
+      "Cancelled", etc.
+    - mcp__symphony_linear__attach_pr_url(url, title?): attach the PR link.
+    - mcp__symphony_linear__post_comment: blockers and final summaries
+      (NOT the workpad).
 
   # Per-turn timeout. 1 hour matches the SPEC default; lower if you want to
   # bail out earlier on a stuck run.

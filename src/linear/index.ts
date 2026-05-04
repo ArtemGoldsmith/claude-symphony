@@ -3,7 +3,13 @@
 export type { Issue, IssueRef } from './issue.js';
 export { adaptIssue } from './adapter.js';
 export type { RawLinearIssue, RawLinearRelation } from './adapter.js';
-export type { LinearGateway } from './gateway.js';
+export type { LinearGateway, LinearWriteGateway } from './gateway.js';
+export {
+  SdkLinearWriteGateway,
+  createLinearWriteGateway,
+  type LinearWriteClient,
+  type WriteIssueNode,
+} from './writes.js';
 export { LinearTrackerError } from './gateway.js';
 export {
   SdkLinearGateway,

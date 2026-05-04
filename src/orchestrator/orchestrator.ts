@@ -17,11 +17,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import type { ResolvedWorkflowConfig } from '../config/resolve.js';
-import type { LinearGateway } from '../linear/gateway.js';
+import type { LinearGateway, LinearWriteGateway } from '../linear/gateway.js';
 import type { Issue } from '../linear/issue.js';
 import type { WorkspaceManager } from '../workspace/manager.js';
 import { AgentRunner, type AgentRunResult } from '../agent/runner.js';
 import { buildIssueView, renderPrompt } from '../agent/prompt.js';
+import { createSymphonyLinearMcpServer } from '../agent/symphony-linear-server.js';
 import { HookExecutionError, runHook } from '../workspace/hooks.js';
 
 export interface OrchestratorEvent {
@@ -63,6 +64,13 @@ export interface OrchestratorEvent {
 
 export interface OrchestratorDeps {
   linear: LinearGateway;
+  /**
+   * Linear write surface for the in-process symphony_linear MCP server
+   * exposed to the agent. When omitted, no symphony_linear server is
+   * attached and the agent only sees whatever MCP servers the user
+   * configured in WORKFLOW.md.
+   */
+  linearWrites?: LinearWriteGateway;
   workspace: WorkspaceManager;
   agent: AgentRunner;
   promptTemplate: string;
@@ -316,11 +324,20 @@ export class Orchestrator {
             issue: buildIssueView(issue),
             attempt: null,
           });
+      const dispatchMcpServers: Record<string, unknown> = {};
+      if (this.deps.linearWrites) {
+        dispatchMcpServers.symphony_linear = createSymphonyLinearMcpServer({
+          currentIssue: issue,
+          writes: this.deps.linearWrites,
+          projectSlug: this.deps.config.tracker.project_slug,
+        });
+      }
       const result = await this.deps.agent.run({
         workspacePath: ws.path,
         prompt,
         config: this.deps.config.claude,
         resumeSessionId,
+        dispatchMcpServers,
         externalAbort: externalAbort.signal,
         onStderr: (chunk) => {
           this.emit({
