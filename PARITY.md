@@ -39,7 +39,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 |---|---|---|---|
 | §3.1.1 Workflow Loader | ✅ | `src/workflow/loader.ts` | gray-matter front matter + Markdown body, trimmed; explicit error on missing/empty/non-mapping front matter |
 | §3.1.2 Config Layer | ✅ | `src/config/{schema,resolve,preflight}.ts` | Zod-validated typed view + env/home expansion + dispatch preflight |
-| §3.1.3 Issue Tracker Client | 🔵 Phase 1 | `src/linear/client.ts`, `src/linear/adapter.ts` | `@linear/sdk` |
+| §3.1.3 Issue Tracker Client | ✅ | `src/linear/{client,adapter,gateway,issue}.ts` | `LinearGateway` interface + `SdkLinearGateway` over `@linear/sdk`; orchestrator-side fakes use the same interface |
 | §3.1.4 Orchestrator | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | MVP subset (see §F of SPEC-claude.md) |
 | §3.1.5 Workspace Manager | 🔵 Phase 1 | `src/workspace/manager.ts` | `after_create` hook only in MVP |
 | §3.1.6 Agent Runner | 🔵 Phase 1 | `src/agent/runner.ts` | `claude-agent-sdk`; replaces §10 wholesale per `SPEC-claude.md` §A |
@@ -51,7 +51,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §4. Core Domain Model
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §4.1.1 Issue entity | 🔵 Phase 1 | `src/linear/issue.ts` | Normalized shape per §11.3 |
+| §4.1.1 Issue entity | ✅ | `src/linear/issue.ts` | Normalized shape per §11.3; timestamps are ISO-8601 strings for log-friendliness |
 | §4.1.2 Workflow Definition | ✅ | `src/workflow/loader.ts` | `WorkflowDefinition = { config, promptTemplate, sourcePath }` |
 | §4.1.3 Service Config (typed view) | ✅ | `src/config/schema.ts` | Zod schema; ResolvedWorkflowConfig narrows api_key after resolve |
 | §4.1.4 Workspace | 🔵 Phase 1 | `src/workspace/manager.ts` | |
@@ -118,10 +118,10 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §11. Issue Tracker Integration Contract (Linear)
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §11.1 REQUIRED operations | 🔵 Phase 1 | `src/linear/client.ts` | `fetch_candidate_issues`, `fetch_issue_state(id)`, terminal-cleanup |
-| §11.2 Query semantics | 🔵 Phase 1 | `src/linear/client.ts` | `project: { slugId: { eq } }`, page size 50, full pagination |
-| §11.3 Normalization rules | 🔵 Phase 1 | `src/linear/adapter.ts` | Lowercase labels, ISO-8601 timestamps, etc. |
-| §11.4 Error handling contract | 🔵 Phase 1 | `src/linear/client.ts` | Mapped error classes |
+| §11.1 REQUIRED operations | 🟡 Phase 1 / Phase 2 | `src/linear/client.ts` | `fetchActiveCandidates`, `fetchIssueByIdentifier` done; terminal-cleanup query deferred to Phase 2 (§8.6) |
+| §11.2 Query semantics | ✅ | `src/linear/client.ts` | `project: { slugId: { eq } }` + `state.name.in`; page size 50; full pagination |
+| §11.3 Normalization rules | ✅ | `src/linear/adapter.ts` | Lowercase labels, integer-only priority, ISO-8601 re-emission, blocked_by from inverse `blocks` relations |
+| §11.4 Error handling contract | 🟡 Phase 1 | `src/linear/{client,gateway}.ts` | Single `LinearTrackerError` wrapping SDK errors via native `cause`; finer-grained classes deferred |
 | §11.5 Tracker writes (boundary) | 🟡 deviation | (agent-side) | Linear MCP server replaces `linear_graphql` tool — `SPEC-claude.md` §D |
 
 ## §12. Prompt Construction and Context Assembly
@@ -175,7 +175,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 |---|---|---|---|
 | §17.1 Workflow + config parsing | ✅ | `tests/config/`, `tests/workflow/` | 43 vitest tests; ~92% line / 85% branch coverage on covered modules |
 | §17.2 Workspace manager + safety | 🔵 Phase 1 | `tests/workspace/` | |
-| §17.3 Issue tracker client | 🔵 Phase 1 | `tests/linear/` | Mocked GraphQL |
+| §17.3 Issue tracker client | ✅ | `tests/linear/` | 32 vitest tests against a stub `IssuesQueryClient`: pagination, filter shape, adapter integration, identifier parser, error wrapping |
 | §17.4 Orchestrator dispatch + retry | 🔵 Phase 1 | `tests/orchestrator/` | Fake clock |
 | §17.5 Coding-agent app-server client | 🟡 deviation | `tests/agent/` | Fake `claude-agent-sdk` `query()` |
 | §17.6 Observability | 🔵 Phase 1 | `tests/observability/` | Log shape assertions |
