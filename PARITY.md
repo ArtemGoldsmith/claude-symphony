@@ -37,8 +37,8 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §3. System Overview
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §3.1.1 Workflow Loader | 🔵 Phase 1 | `src/workflow/loader.ts` | YAML front matter + body, gray-matter |
-| §3.1.2 Config Layer | 🔵 Phase 1 | `src/config/schema.ts`, `src/config/resolve.ts` | Zod-validated typed view |
+| §3.1.1 Workflow Loader | ✅ | `src/workflow/loader.ts` | gray-matter front matter + Markdown body, trimmed; explicit error on missing/empty/non-mapping front matter |
+| §3.1.2 Config Layer | ✅ | `src/config/{schema,resolve,preflight}.ts` | Zod-validated typed view + env/home expansion + dispatch preflight |
 | §3.1.3 Issue Tracker Client | 🔵 Phase 1 | `src/linear/client.ts`, `src/linear/adapter.ts` | `@linear/sdk` |
 | §3.1.4 Orchestrator | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | MVP subset (see §F of SPEC-claude.md) |
 | §3.1.5 Workspace Manager | 🔵 Phase 1 | `src/workspace/manager.ts` | `after_create` hook only in MVP |
@@ -52,8 +52,8 @@ This document is the canonical progress tracker. It is updated **in the same com
 | Spec | Status | Module | Notes |
 |---|---|---|---|
 | §4.1.1 Issue entity | 🔵 Phase 1 | `src/linear/issue.ts` | Normalized shape per §11.3 |
-| §4.1.2 Workflow Definition | 🔵 Phase 1 | `src/workflow/loader.ts` | `{ config, prompt_template }` |
-| §4.1.3 Service Config (typed view) | 🔵 Phase 1 | `src/config/schema.ts` | Zod schema |
+| §4.1.2 Workflow Definition | ✅ | `src/workflow/loader.ts` | `WorkflowDefinition = { config, promptTemplate, sourcePath }` |
+| §4.1.3 Service Config (typed view) | ✅ | `src/config/schema.ts` | Zod schema; ResolvedWorkflowConfig narrows api_key after resolve |
 | §4.1.4 Workspace | 🔵 Phase 1 | `src/workspace/manager.ts` | |
 | §4.1.5+ remaining entities (Run, Attempt, etc.) | 🔵 Phase 1/2 | `src/orchestrator/state.ts` | Some fields land in MVP; full lifecycle in Phase 2 |
 | §4.2 Stable IDs / normalization | 🔵 Phase 1 | `src/linear/adapter.ts` | |
@@ -61,20 +61,20 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §5. Workflow Specification (Repository Contract)
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §5.1 File discovery and path resolution | 🔵 Phase 1 | `src/workflow/loader.ts` | CLI takes explicit path; no auto-discovery in MVP |
-| §5.2 File format | 🔵 Phase 1 | `src/workflow/loader.ts` | YAML front matter + Markdown body |
-| §5.3.1–§5.3.5 `tracker`/`polling`/`workspace`/`hooks`/`agent` | 🔵 Phase 1 | `src/config/schema.ts` | Preserved as-is |
-| §5.3.6 `codex` block | 🟡 deviation | `src/config/schema.ts` | Replaced by `claude:` block — see `SPEC-claude.md` §B |
+| §5.1 File discovery and path resolution | ✅ | `src/workflow/loader.ts` | Explicit path argument; resolves relative paths via `path.resolve()` |
+| §5.2 File format | ✅ | `src/workflow/loader.ts` | YAML front matter + Markdown body via gray-matter |
+| §5.3.1–§5.3.5 `tracker`/`polling`/`workspace`/`hooks`/`agent` | ✅ | `src/config/schema.ts` | Preserved field-for-field; defaults applied |
+| §5.3.6 `codex` block | ✅ deviation | `src/config/schema.ts` | Replaced by `claude:` block per `SPEC-claude.md` §B; MVP guard rejects `max_turns > 1` |
 | §5.4 Prompt Template Contract | 🔵 Phase 1 | `src/agent/prompt.ts` | Liquid-style `{{ }}` substitution; strict unknown-variable error |
-| §5.5 Workflow validation and error surface | 🔵 Phase 1 | `src/workflow/loader.ts`, `src/config/schema.ts` | Zod + path-context error messages |
+| §5.5 Workflow validation and error surface | ✅ | `src/workflow/loader.ts`, `src/config/schema.ts` | WorkflowLoadError with file path; Zod errors with field path |
 
 ## §6. Configuration Specification
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §6.1 Resolution pipeline | 🔵 Phase 1 | `src/config/resolve.ts` | Defaults + `$VAR` env-token expansion + `~` home-dir |
+| §6.1 Resolution pipeline | ✅ | `src/config/resolve.ts` | Defaults via Zod; `$VAR`/`${VAR}` env-token expansion; `~` home expansion; api_key fallback to `LINEAR_API_KEY` |
 | §6.2 Dynamic reload semantics | ⚪ Phase 3 | — | Static load at boot in MVP |
-| §6.3 Dispatch preflight validation | 🔵 Phase 1 | `src/config/preflight.ts` | Validates required fields and Linear MCP presence |
-| §6.4 Cheat sheet | 🟡 deviation | `SPEC-claude.md` §B.1 | `codex.*` rows → `claude.*` |
+| §6.3 Dispatch preflight validation | ✅ | `src/config/preflight.ts` | Linear MCP detection (key or URL match); workspace.root parent existence; non-empty api_key |
+| §6.4 Cheat sheet | ✅ deviation | `SPEC-claude.md` §B.1 | `codex.*` rows → `claude.*`; canonical table lives in SPEC-claude.md |
 
 ## §7. Orchestration State Machine
 | Spec | Status | Module | Notes |
@@ -156,7 +156,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 |---|---|---|---|
 | §15.1 Trust boundary assumption | 🔵 Phase 1 | `README.md`, `SPEC-claude.md` §A.5 | Document the trusted-environment posture |
 | §15.2 Filesystem safety requirements | 🔵 Phase 1 | `src/util/path-safety.ts` | SDK cwd + permission flags + decision Q3 |
-| §15.3 Secret handling | 🔵 Phase 1 | `src/config/resolve.ts` | `$VAR` indirection; never log resolved tokens |
+| §15.3 Secret handling | 🟡 Phase 1 | `src/config/resolve.ts` | `$VAR` indirection works; "never log resolved tokens" guarantee enforced once logging lands (PARITY row §13.1) |
 | §15.4 Hook script safety | 🔵 Phase 1 | `src/workspace/hooks.ts` | Run with `bash -lc`, captured stdout/stderr |
 | §15.5 Harness hardening guidance | 🟡 | `README.md` | Operator-facing notes |
 
@@ -173,7 +173,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §17. Test and Validation Matrix
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §17.1 Workflow + config parsing | 🔵 Phase 1 | `tests/config/`, `tests/workflow/` | Vitest |
+| §17.1 Workflow + config parsing | ✅ | `tests/config/`, `tests/workflow/` | 43 vitest tests; ~92% line / 85% branch coverage on covered modules |
 | §17.2 Workspace manager + safety | 🔵 Phase 1 | `tests/workspace/` | |
 | §17.3 Issue tracker client | 🔵 Phase 1 | `tests/linear/` | Mocked GraphQL |
 | §17.4 Orchestrator dispatch + retry | 🔵 Phase 1 | `tests/orchestrator/` | Fake clock |
