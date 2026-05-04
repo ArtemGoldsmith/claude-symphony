@@ -41,7 +41,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §3.1.2 Config Layer | ✅ | `src/config/{schema,resolve,preflight}.ts` | Zod-validated typed view + env/home expansion + dispatch preflight |
 | §3.1.3 Issue Tracker Client | ✅ | `src/linear/{client,adapter,gateway,issue}.ts` | `LinearGateway` interface + `SdkLinearGateway` over `@linear/sdk`; orchestrator-side fakes use the same interface |
 | §3.1.4 Orchestrator | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | MVP subset (see §F of SPEC-claude.md) |
-| §3.1.5 Workspace Manager | 🔵 Phase 1 | `src/workspace/manager.ts` | `after_create` hook only in MVP |
+| §3.1.5 Workspace Manager | ✅ | `src/workspace/manager.ts` | Idempotent ensureWorkspace; after_create runs once on creation; before_remove deferred to Phase 2 |
 | §3.1.6 Agent Runner | 🔵 Phase 1 | `src/agent/runner.ts` | `claude-agent-sdk`; replaces §10 wholesale per `SPEC-claude.md` §A |
 | §3.1.7 Status Surface (OPTIONAL) | ⚪ Phase 3 | — | Logs only in MVP |
 | §3.1.8 Logging | 🔵 Phase 1 | `src/observability/log.ts` | `pino` JSONL |
@@ -54,7 +54,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §4.1.1 Issue entity | ✅ | `src/linear/issue.ts` | Normalized shape per §11.3; timestamps are ISO-8601 strings for log-friendliness |
 | §4.1.2 Workflow Definition | ✅ | `src/workflow/loader.ts` | `WorkflowDefinition = { config, promptTemplate, sourcePath }` |
 | §4.1.3 Service Config (typed view) | ✅ | `src/config/schema.ts` | Zod schema; ResolvedWorkflowConfig narrows api_key after resolve |
-| §4.1.4 Workspace | 🔵 Phase 1 | `src/workspace/manager.ts` | |
+| §4.1.4 Workspace | ✅ | `src/workspace/manager.ts` | Represented by `WorkspaceLocation { path, created, hookResult }` |
 | §4.1.5+ remaining entities (Run, Attempt, etc.) | 🔵 Phase 1/2 | `src/orchestrator/state.ts` | Some fields land in MVP; full lifecycle in Phase 2 |
 | §4.2 Stable IDs / normalization | 🔵 Phase 1 | `src/linear/adapter.ts` | |
 
@@ -97,11 +97,11 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §9. Workspace Management and Safety
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §9.1 Workspace layout | 🔵 Phase 1 | `src/workspace/manager.ts` | `<root>/<issue_identifier>/` |
-| §9.2 Creation and reuse | 🔵 Phase 1 | `src/workspace/manager.ts` | Idempotent create; reuse on retry |
-| §9.3 OPTIONAL population | 🔵 Phase 1 | `src/workspace/hooks.ts` | Via `after_create` hook |
-| §9.4 Workspace hooks | 🟡 Phase 1 / Phase 2 | `src/workspace/hooks.ts` | `after_create` in MVP; `before_remove` Phase 2 |
-| §9.5 Safety invariants | 🟡 Phase 1 | `src/util/path-safety.ts` | Cwd-rooted SDK + `claude.disallowed_tools`; `canUseTool` callback decision tracked as `SPEC-claude.md` Q3 |
+| §9.1 Workspace layout | ✅ | `src/workspace/manager.ts` | `<root>/<TEAM-NNN>/` via path-safety helper |
+| §9.2 Creation and reuse | ✅ | `src/workspace/manager.ts` | mkdir+stat-based idempotency; second call returns `created: false` and skips hook |
+| §9.3 OPTIONAL population | ✅ | `src/workspace/hooks.ts` | `after_create` runs in workspace cwd via `bash -lc`; output captured |
+| §9.4 Workspace hooks | 🟡 Phase 1 / Phase 2 | `src/workspace/hooks.ts` | `after_create` ✅; `before_remove` Phase 2; SYMPHONY_* env vars injected |
+| §9.5 Safety invariants | 🟡 Phase 1 | `src/util/path-safety.ts` | `assertSafeIssueIdentifier` + `joinWithinRoot` enforce confinement; agent-side enforcement (Q3) lands with agent runner |
 
 ## §10. Agent Runner Protocol
 | Spec | Status | Module | Notes |
@@ -155,9 +155,9 @@ This document is the canonical progress tracker. It is updated **in the same com
 | Spec | Status | Module | Notes |
 |---|---|---|---|
 | §15.1 Trust boundary assumption | 🔵 Phase 1 | `README.md`, `SPEC-claude.md` §A.5 | Document the trusted-environment posture |
-| §15.2 Filesystem safety requirements | 🔵 Phase 1 | `src/util/path-safety.ts` | SDK cwd + permission flags + decision Q3 |
+| §15.2 Filesystem safety requirements | 🟡 Phase 1 | `src/util/path-safety.ts` | Workspace-side enforcement done via `assertSafeIssueIdentifier` + `joinWithinRoot`; agent-side enforcement (Q3) lands with agent runner |
 | §15.3 Secret handling | 🟡 Phase 1 | `src/config/resolve.ts` | `$VAR` indirection works; "never log resolved tokens" guarantee enforced once logging lands (PARITY row §13.1) |
-| §15.4 Hook script safety | 🔵 Phase 1 | `src/workspace/hooks.ts` | Run with `bash -lc`, captured stdout/stderr |
+| §15.4 Hook script safety | ✅ | `src/workspace/hooks.ts` | `bash -lc` in workspace cwd, detached process group for clean timeout-kill, captured stdout/stderr, exit-code propagation |
 | §15.5 Harness hardening guidance | 🟡 | `README.md` | Operator-facing notes |
 
 ## §16. Reference Algorithms
@@ -174,7 +174,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | Spec | Status | Module | Notes |
 |---|---|---|---|
 | §17.1 Workflow + config parsing | ✅ | `tests/config/`, `tests/workflow/` | 43 vitest tests; ~92% line / 85% branch coverage on covered modules |
-| §17.2 Workspace manager + safety | 🔵 Phase 1 | `tests/workspace/` | |
+| §17.2 Workspace manager + safety | ✅ | `tests/workspace/`, `tests/util/path-safety.test.ts` | 24 vitest tests covering idempotency, hook execution, env injection, timeout-kill, path-safety guards |
 | §17.3 Issue tracker client | ✅ | `tests/linear/` | 32 vitest tests against a stub `IssuesQueryClient`: pagination, filter shape, adapter integration, identifier parser, error wrapping |
 | §17.4 Orchestrator dispatch + retry | 🔵 Phase 1 | `tests/orchestrator/` | Fake clock |
 | §17.5 Coding-agent app-server client | 🟡 deviation | `tests/agent/` | Fake `claude-agent-sdk` `query()` |
