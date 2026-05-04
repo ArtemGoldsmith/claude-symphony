@@ -81,6 +81,11 @@ export const ClaudeConfigSchema = z
     // is the Phase 2 design question tracked in SPEC-claude.md §C / Q1.
     // Default 20 matches openai/symphony's reference configuration.
     max_turns: z.number().int().min(1).max(200).default(20),
+    // PreToolUse safety hooks — survive bypassPermissions and enforce a
+    // minimal "no Edit/Write outside workspace, no obviously dangerous
+    // bash" policy. Default true; turn off only if you have a stronger
+    // OS-level sandbox in place. See src/agent/safety-hooks.ts.
+    enable_safety_hooks: z.boolean().default(true),
   })
   .default({});
 export type ClaudeConfig = z.infer<typeof ClaudeConfigSchema>;

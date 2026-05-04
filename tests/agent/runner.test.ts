@@ -19,6 +19,7 @@ function defaultClaudeConfig(overrides: Partial<ClaudeConfig> = {}): ClaudeConfi
     read_timeout_ms: 5_000,
     stall_timeout_ms: 30_000,
     max_turns: 1,
+    enable_safety_hooks: true,
     ...overrides,
   };
 }

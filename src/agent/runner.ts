@@ -3,6 +3,7 @@
 // Deviations: SPEC-claude.md §A — Codex protocol replaced wholesale by SDK query().
 
 import type { ClaudeConfig } from '../config/schema.js';
+import { buildPreToolUseSafetyHook } from './safety-hooks.js';
 
 /**
  * Subset of `@anthropic-ai/claude-agent-sdk` SDKMessage we actually consume.
@@ -67,6 +68,12 @@ export interface QueryOptions {
     | string
     | string[]
     | { type: 'preset'; preset: 'claude_code'; append?: string };
+  /**
+   * Forwarded to claude-agent-sdk Options.hooks. The shape is the SDK's
+   * `Partial<Record<HookEvent, HookCallbackMatcher[]>>`; we keep it loose
+   * so we don't have to track HookEvent additions on every SDK release.
+   */
+  hooks?: Record<string, Array<{ matcher?: string; hooks: Array<(...args: unknown[]) => unknown>; timeout?: number }>>;
 }
 
 /**
@@ -168,6 +175,16 @@ export function buildQueryOptions(input: AgentRunInput, abort: AbortController):
   // SDK call goes out.
   if (cfg.permission_mode === 'bypassPermissions') {
     opts.allowDangerouslySkipPermissions = true;
+  }
+  if (cfg.enable_safety_hooks) {
+    const hook = buildPreToolUseSafetyHook({ workspaceCwd: input.workspacePath });
+    opts.hooks = {
+      ...opts.hooks,
+      PreToolUse: [
+        ...(opts.hooks?.PreToolUse ?? []),
+        { hooks: [hook as unknown as (...args: unknown[]) => unknown] },
+      ],
+    };
   }
   if (cfg.allowed_tools !== undefined) {
     opts.allowedTools = cfg.allowed_tools;
