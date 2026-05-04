@@ -27,14 +27,23 @@ export interface OrchestratorEvent {
     | 'dispatch_started'
     | 'dispatch_completed'
     | 'dispatch_failed'
+    | 'continuation_scheduled'
     | 'retry_scheduled'
-    | 'retry_skipped';
+    | 'retry_skipped'
+    | 'agent_stderr';
   at: number;
   issueId?: string;
   issueIdentifier?: string;
   error?: string;
   result?: AgentRunResult;
   retryAt?: number;
+  /**
+   * When type === 'continuation_scheduled', the Linear state the issue was in
+   * at the time the orchestrator decided the agent's job wasn't done yet.
+   */
+  linearStateAfterRun?: string;
+  /** Raw stderr chunk from the agent subprocess, when type is 'agent_stderr'. */
+  stderrChunk?: string;
 }
 
 export interface OrchestratorDeps {
@@ -52,7 +61,13 @@ export interface OrchestratorDeps {
 import { OrchestratorState } from './state.js';
 
 const RETRY_DELAY_MS = 30_000;
-const MAX_ATTEMPTS = 2;
+const MAX_FAILURE_ATTEMPTS = 2;
+/**
+ * Hard cap on total dispatches per issue. Protects against runaway cost when
+ * Linear state never leaves `active_states`. Hitting it marks the issue
+ * `failed` with an explanatory error so an operator can intervene.
+ */
+const MAX_DISPATCHES = 10;
 
 export class Orchestrator {
   readonly state = new OrchestratorState();
@@ -142,17 +157,19 @@ export class Orchestrator {
         workspacePath: ws.path,
         prompt,
         config: this.deps.config.claude,
+        onStderr: (chunk) => {
+          this.emit({
+            type: 'agent_stderr',
+            at: this.deps.now?.() ?? Date.now(),
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            stderrChunk: chunk,
+          });
+        },
       });
 
       if (result.exitReason === 'completed') {
-        this.state.markCompleted(issue.id);
-        this.emit({
-          type: 'dispatch_completed',
-          at: this.deps.now?.() ?? Date.now(),
-          issueId: issue.id,
-          issueIdentifier: issue.identifier,
-          result,
-        });
+        await this.handleSuccess(issue, result);
       } else {
         this.handleFailure(issue, result.errorMessage ?? `agent ${result.exitReason}`);
       }
@@ -171,7 +188,7 @@ export class Orchestrator {
       error: reason,
     });
 
-    if (this.state.attemptCount(issue.id) < MAX_ATTEMPTS) {
+    if (this.state.attemptCount(issue.id) < MAX_FAILURE_ATTEMPTS) {
       const retryAt = now + RETRY_DELAY_MS;
       this.state.scheduleRetry(issue.id, retryAt);
       this.emit({
@@ -184,6 +201,73 @@ export class Orchestrator {
     } else {
       this.state.markFailed(issue.id);
     }
+  }
+
+  /**
+   * Handle a successful SDK exit. Symphony parity (SPEC.md §7.2): a
+   * successful agent run does NOT mean the issue is done — the orchestrator
+   * re-checks Linear and only marks completed if the issue has left the
+   * configured active_states. Otherwise it requeues for continuation
+   * (no cooldown, attempt counter retained for the runaway cap).
+   */
+  private async handleSuccess(issue: Issue, result: AgentRunResult): Promise<void> {
+    const now = this.deps.now?.() ?? Date.now();
+    let refreshed: Issue | null = null;
+    try {
+      refreshed = await this.deps.linear.fetchIssueByIdentifier(issue.identifier);
+    } catch (err) {
+      // If we can't refresh the tracker, fall back to "completed" rather
+      // than re-dispatching blindly. Operator can manually re-open the
+      // ticket if the agent's work was actually incomplete.
+      this.state.markCompleted(issue.id);
+      this.emit({
+        type: 'dispatch_completed',
+        at: now,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        result,
+        error: `linear refresh failed after success: ${(err as Error).message}`,
+      });
+      return;
+    }
+
+    const stillActive =
+      refreshed !== null &&
+      this.deps.config.tracker.active_states.includes(refreshed.state);
+
+    if (!stillActive) {
+      this.state.markCompleted(issue.id);
+      this.emit({
+        type: 'dispatch_completed',
+        at: now,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        result,
+      });
+      return;
+    }
+
+    if (this.state.attemptCount(issue.id) >= MAX_DISPATCHES) {
+      this.state.markFailed(issue.id);
+      this.emit({
+        type: 'dispatch_failed',
+        at: now,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        error: `issue still in active state "${refreshed!.state}" after ${MAX_DISPATCHES} dispatches; manual intervention required`,
+      });
+      return;
+    }
+
+    this.state.markIdleForContinuation(issue.id);
+    this.emit({
+      type: 'continuation_scheduled',
+      at: now,
+      issueId: issue.id,
+      issueIdentifier: issue.identifier,
+      result,
+      linearStateAfterRun: refreshed!.state,
+    });
   }
 
   private scheduleNextTick(): void {

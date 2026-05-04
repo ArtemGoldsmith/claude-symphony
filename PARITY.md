@@ -64,7 +64,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §5.1 File discovery and path resolution | ✅ | `src/workflow/loader.ts` | Explicit path argument; resolves relative paths via `path.resolve()` |
 | §5.2 File format | ✅ | `src/workflow/loader.ts` | YAML front matter + Markdown body via gray-matter |
 | §5.3.1–§5.3.5 `tracker`/`polling`/`workspace`/`hooks`/`agent` | ✅ | `src/config/schema.ts` | Preserved field-for-field; defaults applied |
-| §5.3.6 `codex` block | ✅ deviation | `src/config/schema.ts` | Replaced by `claude:` block per `SPEC-claude.md` §B; MVP guard rejects `max_turns > 1` |
+| §5.3.6 `codex` block | ✅ deviation | `src/config/schema.ts` | Replaced by `claude:` block per `SPEC-claude.md` §B; `max_turns` accepts `[1, 200]` (default 20, matches upstream); `bypassPermissions` auto-sets `allowDangerouslySkipPermissions` SDK flag |
 | §5.4 Prompt Template Contract | 🟡 Phase 1 / Phase 2 | `src/agent/prompt.ts` | `{{ name }}` and `{{ name.field }}` substitution with strict unknown-variable error; `{% if %}` / filters deferred to Phase 2 alongside continuation/turns |
 | §5.5 Workflow validation and error surface | ✅ | `src/workflow/loader.ts`, `src/config/schema.ts` | WorkflowLoadError with file path; Zod errors with field path |
 
@@ -80,8 +80,8 @@ This document is the canonical progress tracker. It is updated **in the same com
 | Spec | Status | Module | Notes |
 |---|---|---|---|
 | §7.1 Issue orchestration states | ✅ MVP | `src/orchestrator/state.ts` | idle / claimed / running / completed / failed / retry_pending |
-| §7.2 Run attempt lifecycle | 🟡 Phase 1 / Phase 2 | `src/orchestrator/state.ts` | attemptCount tracked; multi-turn deferred per `SPEC-claude.md` §C |
-| §7.3 Transition triggers | ✅ MVP | `src/orchestrator/orchestrator.ts` | Poll tick + dispatch result + retry-cooldown elapse |
+| §7.2 Run attempt lifecycle | 🟡 Phase 1 / Phase 2 | `src/orchestrator/state.ts` | attemptCount tracked; success-while-Linear-active requeues for continuation up to MAX_DISPATCHES=10; SDK-side multi-query session resume deferred to Phase 2 (B1) |
+| §7.3 Transition triggers | ✅ MVP | `src/orchestrator/orchestrator.ts` | Poll tick + dispatch result + retry-cooldown elapse + post-success Linear refresh |
 | §7.4 Idempotency and recovery rules | ⚪ Phase 2 | — | Restart recovery deferred |
 
 ## §8. Polling, Scheduling, and Reconciliation

@@ -54,6 +54,20 @@ describe('OrchestratorState', () => {
     expect(s.isInRetryCooldown('i1', 0)).toBe(false);
   });
 
+  it('markIdleForContinuation transitions back to idle, retains attemptCount, and clears cooldown', () => {
+    const s = new OrchestratorState();
+    s.claim('i1');
+    s.markRunning('i1');
+    s.markRunning('i1'); // force attemptCount = 2
+    s.scheduleRetry('i1', 5000);
+
+    s.markIdleForContinuation('i1');
+    expect(s.stateOf('i1')).toBe('idle');
+    expect(s.attemptCount('i1')).toBe(2);
+    expect(s.isInRetryCooldown('i1', 0)).toBe(false);
+    expect(s.isBusy('i1')).toBe(false);
+  });
+
   it('drain resolves once all tracked promises settle', async () => {
     const s = new OrchestratorState();
     let resolveA: (v: void) => void = () => undefined;

@@ -74,10 +74,13 @@ export const ClaudeConfigSchema = z
     turn_timeout_ms: z.number().int().positive().default(3_600_000),
     read_timeout_ms: z.number().int().positive().default(5_000),
     stall_timeout_ms: z.number().int().nonnegative().default(300_000),
-    // MVP guard per SPEC-claude.md §C. Continuation/turns are deferred to
-    // Phase 2; a configured value > 1 is rejected here so behaviour cannot
-    // drift before the design question is resolved.
-    max_turns: z.literal(1).default(1),
+    // SDK-internal cap on round-trips within ONE `query()` call (i.e. how
+    // many tool-use → assistant cycles the model is allowed before giving
+    // up). NOT the Codex-style multi-turn orchestration loop — that loop
+    // (re-running query() while the issue stays in an active Linear state)
+    // is the Phase 2 design question tracked in SPEC-claude.md §C / Q1.
+    // Default 20 matches openai/symphony's reference configuration.
+    max_turns: z.number().int().min(1).max(200).default(20),
   })
   .default({});
 export type ClaudeConfig = z.infer<typeof ClaudeConfigSchema>;

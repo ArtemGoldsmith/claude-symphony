@@ -98,6 +98,20 @@ export function writeOrchestratorEvent(logger: Logger, event: OrchestratorEvent)
       logger.warn({ ...base, error: event.error }, `failed ${event.issueIdentifier}`);
       break;
 
+    case 'continuation_scheduled':
+      logger.info(
+        {
+          ...base,
+          linearStateAfterRun: event.linearStateAfterRun,
+          exitReason: event.result?.exitReason,
+          durationMs: event.result?.durationMs,
+          numTurns: event.result?.numTurns,
+          usage: event.result?.usage,
+        },
+        `${event.issueIdentifier} still active after agent run; requeuing for continuation`,
+      );
+      break;
+
     case 'retry_scheduled':
       logger.warn(
         { ...base, retryAt: event.retryAt },
@@ -107,6 +121,13 @@ export function writeOrchestratorEvent(logger: Logger, event: OrchestratorEvent)
 
     case 'retry_skipped':
       logger.debug(base, `${event.issueIdentifier} still in cooldown`);
+      break;
+
+    case 'agent_stderr':
+      logger.warn(
+        { ...base, stderr: (event.stderrChunk ?? '').trimEnd() },
+        `agent stderr (${event.issueIdentifier})`,
+      );
       break;
   }
 }

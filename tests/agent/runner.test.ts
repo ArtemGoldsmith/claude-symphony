@@ -129,6 +129,27 @@ describe('buildQueryOptions', () => {
     const opts = buildQueryOptions(defaultInput(), new AbortController());
     expect(opts.systemPrompt).toBeUndefined();
   });
+
+  it('sets allowDangerouslySkipPermissions=true when permissionMode is bypassPermissions', () => {
+    const opts = buildQueryOptions(
+      defaultInput({
+        config: defaultClaudeConfig({ permission_mode: 'bypassPermissions' }),
+      }),
+      new AbortController(),
+    );
+    expect(opts.permissionMode).toBe('bypassPermissions');
+    expect(opts.allowDangerouslySkipPermissions).toBe(true);
+  });
+
+  it('omits allowDangerouslySkipPermissions for non-bypass permissionModes', () => {
+    for (const mode of ['default', 'acceptEdits', 'plan'] as const) {
+      const opts = buildQueryOptions(
+        defaultInput({ config: defaultClaudeConfig({ permission_mode: mode }) }),
+        new AbortController(),
+      );
+      expect(opts.allowDangerouslySkipPermissions).toBeUndefined();
+    }
+  });
 });
 
 describe('AgentRunner.run — happy path', () => {

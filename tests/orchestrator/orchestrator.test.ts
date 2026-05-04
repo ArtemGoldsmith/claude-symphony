@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -51,6 +53,8 @@ interface Fakes {
   agentInputs: AgentRunInput[];
   workspaceCalls: string[];
   fetchCalls: number;
+  /** Mutable state-by-identifier: tests can flip a ticket terminal between dispatches. */
+  linearStates: Map<string, string>;
 }
 
 function buildFakes(opts: {
@@ -58,11 +62,26 @@ function buildFakes(opts: {
   fetchError?: Error;
   agentResult?: AgentRunResult | ((input: AgentRunInput) => AgentRunResult);
   workspaceFails?: boolean;
+  /** Override per-identifier behaviour for fetchIssueByIdentifier. */
+  refreshError?: Error;
+  /**
+   * If set, every successful dispatch transitions that issue's Linear state
+   * to this value (simulating the agent moving the ticket terminal). Most
+   * happy-path tests use 'Done' here so the orchestrator marks completed.
+   * Tests that want to exercise the continuation path leave it undefined.
+   */
+  postSuccessLinearState?: string;
 }): Fakes {
   const events: OrchestratorEvent[] = [];
   const agentInputs: AgentRunInput[] = [];
   const workspaceCalls: string[] = [];
   let fetchCalls = 0;
+  // Initial state seeded from the candidate list — every candidate starts in
+  // its `state` field (typically "Todo"). Tests mutate this map to simulate
+  // an agent moving the issue out of active states.
+  const linearStates = new Map<string, string>(
+    (opts.candidates ?? []).map((c) => [c.identifier, c.state]),
+  );
 
   const linear: LinearGateway = {
     fetchActiveCandidates: vi.fn(async () => {
@@ -70,7 +89,14 @@ function buildFakes(opts: {
       if (opts.fetchError) throw opts.fetchError;
       return opts.candidates ?? [];
     }),
-    fetchIssueByIdentifier: vi.fn(async () => null),
+    fetchIssueByIdentifier: vi.fn(async (identifier: string) => {
+      if (opts.refreshError) throw opts.refreshError;
+      const state = linearStates.get(identifier);
+      if (state === undefined) return null;
+      const original = (opts.candidates ?? []).find((c) => c.identifier === identifier);
+      if (!original) return null;
+      return { ...original, state };
+    }),
   };
 
   const workspace = {
@@ -119,6 +145,12 @@ function buildFakes(opts: {
       typeof opts.agentResult === 'function'
         ? opts.agentResult(input)
         : opts.agentResult ?? successResult;
+    if (out.exitReason === 'completed' && opts.postSuccessLinearState !== undefined) {
+      // Simulate the agent moving the Linear ticket. The orchestrator's
+      // post-success Linear refresh will see the new state.
+      const identifier = path.basename(input.workspacePath);
+      linearStates.set(identifier, opts.postSuccessLinearState);
+    }
     return out;
   });
 
@@ -129,20 +161,21 @@ function buildFakes(opts: {
     events,
     agentInputs,
     workspaceCalls,
+    linearStates,
     get fetchCalls() {
       return fetchCalls;
     },
   } as Fakes;
 }
 
-describe('Orchestrator.tick — happy path', () => {
+describe('Orchestrator.tick — happy path (agent completes work, Linear leaves active)', () => {
   it('dispatches each candidate up to the concurrency cap', async () => {
     const candidates = [
       makeIssue({ id: 'i1', identifier: 'CHR-1' }),
       makeIssue({ id: 'i2', identifier: 'CHR-2' }),
       makeIssue({ id: 'i3', identifier: 'CHR-3' }),
     ];
-    const fakes = buildFakes({ candidates });
+    const fakes = buildFakes({ candidates, postSuccessLinearState: 'Done' });
 
     const orchestrator = new Orchestrator({
       linear: fakes.linear,
@@ -165,9 +198,9 @@ describe('Orchestrator.tick — happy path', () => {
     expect(orchestrator.state.stateOf('i3')).toBe('idle');
   });
 
-  it('emits dispatch_started and dispatch_completed events', async () => {
+  it('emits dispatch_started and dispatch_completed events when Linear state moves terminal', async () => {
     const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
-    const fakes = buildFakes({ candidates });
+    const fakes = buildFakes({ candidates, postSuccessLinearState: 'Done' });
 
     const orchestrator = new Orchestrator({
       linear: fakes.linear,
@@ -186,9 +219,66 @@ describe('Orchestrator.tick — happy path', () => {
     expect(types).toContain('dispatch_started');
     expect(types).toContain('dispatch_completed');
     expect(types).toContain('tick_completed');
+    expect(types).not.toContain('continuation_scheduled');
   });
 
-  it('does not redispatch a completed issue on a subsequent tick', async () => {
+  it('does not redispatch an issue once Linear is terminal on subsequent ticks', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const fakes = buildFakes({ candidates, postSuccessLinearState: 'Done' });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(fakes.workspaceCalls).toEqual(['CHR-1']);
+    expect(orchestrator.state.stateOf('i1')).toBe('completed');
+
+    // Second tick — still the same candidate would come back from Linear in
+    // this stub, but orchestrator's in-memory state remembers it's completed.
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(fakes.workspaceCalls).toEqual(['CHR-1']);
+  });
+});
+
+describe('Orchestrator.tick — Symphony continuation semantics', () => {
+  it('redispatches when agent succeeds but Linear state remains active', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    // No postSuccessLinearState → agent does NOT move the ticket → Linear
+    // stays in "Todo" → orchestrator should requeue for continuation.
+    const fakes = buildFakes({ candidates });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+
+    expect(orchestrator.state.stateOf('i1')).toBe('idle');
+    const cont = fakes.events.find((e) => e.type === 'continuation_scheduled');
+    expect(cont).toBeDefined();
+    expect(cont?.linearStateAfterRun).toBe('Todo');
+
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(fakes.workspaceCalls).toEqual(['CHR-1', 'CHR-1']);
+    expect(orchestrator.state.attemptCount('i1')).toBe(2);
+  });
+
+  it('marks completed once the agent moves the issue to a terminal state on a later attempt', async () => {
     const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
     const fakes = buildFakes({ candidates });
 
@@ -203,11 +293,61 @@ describe('Orchestrator.tick — happy path', () => {
 
     await orchestrator.tick();
     await orchestrator.state.drain();
-    expect(fakes.workspaceCalls).toEqual(['CHR-1']);
+    expect(orchestrator.state.stateOf('i1')).toBe('idle');
+
+    // Second attempt: caller flips Linear state mid-run via the test hook.
+    fakes.linearStates.set('CHR-1', 'Done');
+    // The agent fn doesn't override after each call here; we just preset
+    // the new state so the post-success refresh observes it.
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(orchestrator.state.stateOf('i1')).toBe('completed');
+  });
+
+  it('marks failed after MAX_DISPATCHES (10) without leaving active states', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const fakes = buildFakes({ candidates });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    for (let i = 0; i < 10; i += 1) {
+      await orchestrator.tick();
+      await orchestrator.state.drain();
+    }
+
+    expect(orchestrator.state.stateOf('i1')).toBe('failed');
+    const finalFail = fakes.events
+      .filter((e) => e.type === 'dispatch_failed')
+      .pop();
+    expect(finalFail?.error).toMatch(/still in active state.*after 10 dispatches/);
+  });
+
+  it('falls back to completed when the post-success Linear refresh fails', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const fakes = buildFakes({ candidates, refreshError: new Error('linear unreachable') });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+    });
 
     await orchestrator.tick();
     await orchestrator.state.drain();
-    expect(fakes.workspaceCalls).toEqual(['CHR-1']);
+
+    expect(orchestrator.state.stateOf('i1')).toBe('completed');
+    const completedEvent = fakes.events.find((e) => e.type === 'dispatch_completed');
+    expect(completedEvent?.error).toMatch(/linear refresh failed/);
   });
 });
 
@@ -370,7 +510,7 @@ describe('Orchestrator.tick — failure handling', () => {
 describe('Orchestrator lifecycle', () => {
   it('start drives at least one tick and stop drains in-flight work', async () => {
     const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
-    const fakes = buildFakes({ candidates });
+    const fakes = buildFakes({ candidates, postSuccessLinearState: 'Done' });
     const orchestrator = new Orchestrator({
       linear: fakes.linear,
       workspace: fakes.workspace,

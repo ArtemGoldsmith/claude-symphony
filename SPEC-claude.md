@@ -78,7 +78,7 @@ The runner SHOULD preserve the `SPEC.md` §13.5 session-metrics shape (`input_to
 | n/a | `claude.model` | string (e.g., `"claude-opus-4-7"`) | implementation default per SDK |
 | n/a | `claude.mcp_servers` | record passed to SDK `mcpServers` | `{}` |
 | n/a | `claude.system_prompt_append` | string appended to SDK system prompt | empty |
-| n/a | `claude.max_turns` | integer; reserved for Phase 2 continuation | 1 in MVP |
+| n/a | `claude.max_turns` | integer in [1, 200] | 20 (matches openai/symphony reference) |
 
 Validation lives in `src/config/schema.ts` as a Zod schema. Unknown keys under `claude:` MUST be ignored for forward compatibility, mirroring `SPEC.md` §5.3 / §6.
 
@@ -94,21 +94,27 @@ Detailed enforcement strategy is owned by `src/util/path-safety.ts`.
 
 ---
 
-## C. Continuation and turns — design deferred to Phase 2
+## C. Continuation and turns — orchestrator-side loop deferred to Phase 2
 
-`SPEC.md` §7.2 and §12.3 describe a Codex-shaped turn lifecycle: a single coding-agent app-server session can run multiple consecutive turns under orchestrator supervision, and the orchestrator decides whether to retry/continue when the issue remains in an active state after a turn completes.
+There are TWO distinct things hiding under the word "turn." Splitting them is the whole point of this section.
 
-`claude-agent-sdk` exposes a different shape: each `query()` is a self-contained streaming generator that ends with a `result` message; sessions may be resumed across queries via session-resume APIs.
+**1. SDK-internal turns (`claude.max_turns`) — supported in MVP.**
 
-For the MVP we adopt the simplest reading:
+`claude-agent-sdk`'s `Options.maxTurns` caps how many internal round-trips (tool-use → assistant message → tool-use → ...) the model is allowed inside a single `query()` call before the SDK returns `result.subtype: "error_max_turns"`. This is the natural Claude analogue of "model can think and act several times before producing a final answer." It has no orchestrator implication; raising it just lets the agent solve more complex tickets in one shot.
 
-- **One Linear issue dispatch = one `query()` call.** The runner does not invoke a second `query()` if the issue is still active when the first completes.
-- `claude.max_turns` is fixed to `1` in MVP. Setting it higher is rejected with a configuration error, so behaviour cannot drift.
-- Phase 2 will pick one of: (a) re-`query()` with conversation resume, (b) re-`query()` with fresh session and a "continuation" prompt suffix mirroring Codex's behaviour, or (c) translating Codex turns to a single longer `query()` via SDK's stop conditions. Decision will be recorded here as §C.1 before any implementation.
+`claude-symphony`'s default is `20` (matches openai/symphony's reference Codex configuration). The schema allows `[1, 200]`. Set it lower if you want to bound runtime cost, higher if your tickets routinely need more model rounds.
 
-Downstream effects (recorded so we don't accidentally ship them):
+**2. Orchestrator-driven multi-`query()` loop — deferred to Phase 2.**
 
-- `attempt` counter (`SPEC.md` §12.3) is wired through the prompt template now, but always equals `null` on the first run and increments only across orchestrator-level retries (see §F), not within a single `query()`.
+`SPEC.md` §7.2 and §12.3 describe a Codex-shaped lifecycle where a single coding-agent app-server session can run multiple consecutive **turns** under orchestrator supervision: when one turn completes but the issue is still in an active state, the orchestrator launches another. This is the Codex notion of "turn" and it lives in the orchestrator, not the SDK.
+
+In MVP the orchestrator dispatches **one `query()` call per Linear issue** and never re-dispatches the same issue (other than the one fixed-delay retry on dispatch failure). If the issue remains active after the agent's `query()` returns successfully, the orchestrator marks it `completed` and walks away.
+
+Phase 2 will pick one of: (a) re-`query()` with conversation resume, (b) re-`query()` with a fresh session and a "continuation" prompt suffix mirroring Codex's behaviour, or (c) translating Codex turns to a single longer `query()` via SDK stop conditions plus a higher `maxTurns`. The decision will be recorded as §C.1 before any implementation.
+
+Downstream effects we deliberately do not ship in MVP:
+
+- The prompt-template `attempt` variable (`SPEC.md` §12.3) is wired through but only increments across orchestrator-level retries on dispatch failure (see §F), never across "the issue is still active, run again" continuations.
 
 ---
 

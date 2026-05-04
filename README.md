@@ -63,7 +63,14 @@ The first poll happens immediately; subsequent polls fire on `polling.interval_m
 
 ### 5. Drive it from Linear
 
-Create a ticket in your project, set its state to `Todo`. Within `interval_ms`, claude-symphony picks it up, creates a worktree under `workspace.root`, runs `after_create`, and dispatches a Claude Code agent with the rendered prompt. The agent writes back to the ticket via Linear's public MCP server (already wired in the example). When the agent moves the ticket to a state outside `tracker.active_states`, the daemon stops re-polling it.
+Create a ticket in your project, set its state to `Todo`. Within `interval_ms`, claude-symphony picks it up, creates a worktree under `workspace.root`, runs `after_create`, and dispatches a Claude Code agent with the rendered prompt. The agent writes back to the ticket via Linear's public MCP server (already wired in the example).
+
+After each successful agent run, the daemon **re-checks the issue's Linear state** (Symphony parity, see [`SPEC-claude.md`](./SPEC-claude.md) §C):
+
+- If the issue has moved out of `tracker.active_states` (e.g., the agent transitioned it to `Human Review` or `Done`), the orchestrator marks it completed and walks away.
+- If the issue is still in an active state — the agent finished a turn but the work isn't done yet — the orchestrator requeues it with no cooldown so the next tick dispatches another run. Capped at 10 dispatches per issue to bound runaway cost; after that the issue is marked failed and the operator must intervene.
+
+A **failed** dispatch (agent error, timeout, hook failure) is retried once after a 30 s cooldown; a second failure marks the issue failed permanently.
 
 ### Troubleshooting first run
 

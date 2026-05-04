@@ -64,11 +64,25 @@ claude:
   # runs.
   model: claude-opus-4-7
 
-  # See SPEC-claude.md §B for the mapping from upstream `codex.*` fields.
-  # `default` is the safest starting point: the agent must explicitly request
-  # writes and Bash commands. Switch to `acceptEdits` once you trust the loop
-  # for low-risk work, and only use `bypassPermissions` in fully sandboxed envs.
-  permission_mode: default
+  # SECURITY-CRITICAL.
+  #
+  # claude-agent-sdk runs as a non-TTY subprocess from the daemon, so
+  # `default` and `acceptEdits` are not viable for autonomous dispatch:
+  # they require interactive permission prompts the subprocess cannot
+  # answer, and the agent ends up able to plan but never act.
+  #
+  # `bypassPermissions` makes the agent fully autonomous. Be honest about
+  # what that means: the agent has full host access — Bash can use
+  # absolute paths, ssh, network, language runtimes, subagents — and the
+  # workspace cwd plus the `disallowed_tools` list below are NOT a
+  # sandbox. The only meaningful confinement comes from external OS-level
+  # isolation (a VM, a container, a dedicated user, macOS Sandbox, etc.).
+  #
+  # When this lands in Phase 2: PreToolUse hooks (SDK-native) will give
+  # path/command policy enforcement that survives `bypassPermissions`.
+  # Until then, run claude-symphony only in trusted environments and
+  # trusted repos.
+  permission_mode: bypassPermissions
 
   # Tools the agent is FORBIDDEN to use, even when permission_mode would allow.
   # The `Bash(...)` syntax restricts a single binary; the bare name forbids the
@@ -85,6 +99,9 @@ claude:
   # PR/MR back to the issue.
   mcp_servers:
     linear:
+      # Public Linear MCP. Schema requires `type: http` (or `sse`) alongside
+      # the URL — claude-agent-sdk rejects the bare `{ url: ... }` form.
+      type: http
       url: https://mcp.linear.app/mcp
 
   # Appended to the SDK's built-in Claude Code system prompt. Use this for
@@ -99,9 +116,11 @@ claude:
   # bail out earlier on a stuck run.
   turn_timeout_ms: 3600000
 
-  # MUST be 1 in MVP — multi-turn continuation is deferred to Phase 2 per
-  # SPEC-claude.md §C. claude-symphony's Zod schema rejects higher values.
-  max_turns: 1
+  # SDK-internal cap on round-trips inside a single query() call. NOT the
+  # Codex-style multi-query continuation loop — that one is Phase 2.
+  # See SPEC-claude.md §C. Default is 20; raise if your tickets need more
+  # model rounds, lower to bound runtime cost.
+  max_turns: 20
 ---
 
 You are working on Linear ticket `{{ issue.identifier }}` for Chronicle, the

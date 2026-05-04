@@ -31,7 +31,7 @@ describe('parseWorkflowConfig', () => {
     expect(result.claude.turn_timeout_ms).toBe(3_600_000);
     expect(result.claude.read_timeout_ms).toBe(5_000);
     expect(result.claude.stall_timeout_ms).toBe(300_000);
-    expect(result.claude.max_turns).toBe(1);
+    expect(result.claude.max_turns).toBe(20);
   });
 
   it('preserves explicit user-supplied values', () => {
@@ -111,13 +111,13 @@ describe('parseWorkflowConfig', () => {
     ).toThrow();
   });
 
-  it('rejects claude.max_turns greater than 1 (MVP guard, SPEC-claude.md §C)', () => {
-    expect(() =>
-      parseWorkflowConfig({ ...MINIMAL_VALID, claude: { max_turns: 5 } }),
-    ).toThrow();
-    expect(() =>
-      parseWorkflowConfig({ ...MINIMAL_VALID, claude: { max_turns: 2 } }),
-    ).toThrow();
+  it('accepts claude.max_turns within [1, 200] and rejects out-of-range values', () => {
+    expect(parseWorkflowConfig({ ...MINIMAL_VALID, claude: { max_turns: 1 } }).claude.max_turns).toBe(1);
+    expect(parseWorkflowConfig({ ...MINIMAL_VALID, claude: { max_turns: 50 } }).claude.max_turns).toBe(50);
+    expect(parseWorkflowConfig({ ...MINIMAL_VALID, claude: { max_turns: 200 } }).claude.max_turns).toBe(200);
+    expect(() => parseWorkflowConfig({ ...MINIMAL_VALID, claude: { max_turns: 0 } })).toThrow();
+    expect(() => parseWorkflowConfig({ ...MINIMAL_VALID, claude: { max_turns: 201 } })).toThrow();
+    expect(() => parseWorkflowConfig({ ...MINIMAL_VALID, claude: { max_turns: 1.5 } })).toThrow();
   });
 
   it('rejects invalid claude.permission_mode', () => {

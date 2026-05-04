@@ -70,6 +70,17 @@ export class OrchestratorState {
     this.retries.set(issueId, { notBefore });
   }
 
+  /**
+   * After a successful agent run that left the issue in an active Linear
+   * state, transition back to idle so the next poll tick can re-dispatch
+   * with no cooldown. Does NOT reset the attempt counter — that counter
+   * is what bounds total dispatches per issue (Symphony continuation cap).
+   */
+  markIdleForContinuation(issueId: string): void {
+    this.states.set(issueId, 'idle');
+    this.retries.delete(issueId);
+  }
+
   /** Total number of issues currently `claimed` or `running`. */
   busyCount(): number {
     let count = 0;

@@ -36,12 +36,19 @@ export type AgentSdkMessage =
 export interface QueryOptions {
   cwd?: string;
   permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+  /**
+   * REQUIRED when permissionMode === 'bypassPermissions' (the SDK rejects
+   * the option otherwise). Caller (buildQueryOptions) sets this conditionally.
+   */
+  allowDangerouslySkipPermissions?: boolean;
   allowedTools?: string[];
   disallowedTools?: string[];
   mcpServers?: Record<string, unknown>;
   model?: string;
   maxTurns?: number;
   abortController?: AbortController;
+  /** Forwarded to claude-agent-sdk so we can capture subprocess stderr. */
+  stderr?: (data: string) => void;
   systemPrompt?:
     | string
     | string[]
@@ -82,6 +89,12 @@ export interface AgentRunInput {
    * 'aborted_externally'. Independent from the runner's own timeout abort.
    */
   externalAbort?: AbortSignal;
+  /**
+   * Optional callback receiving the subprocess's stderr lines, useful for
+   * surfacing SDK-side failure modes (auth errors, MCP misconfiguration,
+   * etc.) to the orchestrator log.
+   */
+  onStderr?: (chunk: string) => void;
 }
 
 export interface AgentRunResult {
@@ -117,6 +130,15 @@ export function buildQueryOptions(input: AgentRunInput, abort: AbortController):
     maxTurns: cfg.max_turns,
     abortController: abort,
   };
+  if (input.onStderr) {
+    opts.stderr = input.onStderr;
+  }
+  // SDK requires this flag alongside permissionMode 'bypassPermissions'.
+  // Without it the wrapper validation rejects the configuration before any
+  // SDK call goes out.
+  if (cfg.permission_mode === 'bypassPermissions') {
+    opts.allowDangerouslySkipPermissions = true;
+  }
   if (cfg.allowed_tools !== undefined) {
     opts.allowedTools = cfg.allowed_tools;
   }
