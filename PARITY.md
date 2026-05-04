@@ -180,7 +180,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §17.5 Coding-agent app-server client | ✅ deviation | `tests/agent/` | 23 vitest tests with fake QueryFactory: prompt rendering edge cases, options mapping, happy path, result-subtype error mapping, abort/turn/stall timeouts |
 | §17.6 Observability | ✅ | `tests/observability/log.test.ts` | 6 vitest tests: JSONL file write, custom filename, event-to-record projections per event type and level |
 | §17.7 CLI and host lifecycle | ✅ MVP | `tests/cli/main.test.ts` | 10 tests: parseArgs, --logs-root / --port / --help / unknown flags / extra positionals; runCli end-to-end with stub agent + linear; preflight failure surfacing |
-| §17.8 Real integration profile | 🔵 Phase 1 | `tests/e2e/` | One end-to-end run against real Chronicle ticket = MVP DoD |
+| §17.8 Real integration profile | 🔵 Phase 1 | `tests/e2e/` | Awaits operator-side action: create Linear project, set LINEAR_API_KEY, edit `examples/chronicle.WORKFLOW.md` slug, run on a test ticket |
 
 ## §18. Implementation Checklist (Definition of Done)
 | Spec | Status | Module | Notes |

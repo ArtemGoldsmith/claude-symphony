@@ -24,7 +24,52 @@ See [`PARITY.md`](./PARITY.md) for the row-by-row port status against `openai/sy
 
 ## Quick start
 
-Not yet. The first end-to-end run is tracked as MVP Definition of Done in `PARITY.md`.
+The MVP loop is in place. To run it against a real Linear project end-to-end:
+
+### 1. Prepare your Linear project
+
+- In your Linear workspace, create the project the daemon will poll (e.g. "Chronicle" under "Smirnov Labs"). Note the project's slug — right-click the project, "Copy link", and grab the segment after `/project/`.
+- Confirm or add the active states the daemon should treat as dispatch candidates. The default `Todo` and `In Progress` exist out of the box.
+- Get a personal API key from **Linear → Settings → Security & access → Personal API keys**.
+
+### 2. Configure your environment
+
+```sh
+export LINEAR_API_KEY="lin_api_..."
+# Make sure `claude` (the Claude Code CLI) is logged in, OR export ANTHROPIC_API_KEY.
+```
+
+### 3. Author a `WORKFLOW.md`
+
+Copy `examples/chronicle.WORKFLOW.md` somewhere (in or out of your product repo — your call) and edit:
+
+- `tracker.project_slug` to your real slug.
+- `workspace.root` to where per-issue worktrees should live.
+- `hooks.after_create` to the right `git clone` target for your repo.
+- The prompt body at the bottom to match your project's conventions.
+
+The format is YAML front matter + Markdown body. See [`SPEC-claude.md`](./SPEC-claude.md) §B for the front-matter schema (in particular the `claude:` block, which replaces upstream's `codex:` block).
+
+### 4. Run the daemon
+
+```sh
+git clone https://github.com/ArtemGoldsmith/claude-symphony
+cd claude-symphony
+pnpm install
+pnpm dev /absolute/path/to/your/WORKFLOW.md --logs-root ./log
+```
+
+The first poll happens immediately; subsequent polls fire on `polling.interval_ms`. Live activity streams to stdout; structured JSONL goes to `<logs-root>/symphony.log`. `Ctrl-C` (SIGINT) drains in-flight dispatches before exit.
+
+### 5. Drive it from Linear
+
+Create a ticket in your project, set its state to `Todo`. Within `interval_ms`, claude-symphony picks it up, creates a worktree under `workspace.root`, runs `after_create`, and dispatches a Claude Code agent with the rendered prompt. The agent writes back to the ticket via Linear's public MCP server (already wired in the example). When the agent moves the ticket to a state outside `tracker.active_states`, the daemon stops re-polling it.
+
+### Troubleshooting first run
+
+- **"no Linear MCP server configured"** — the preflight check requires a Linear entry under `claude.mcp_servers`. The example WORKFLOW has it pre-wired.
+- **`LINEAR_API_KEY` errors** — either the env var isn't exported in the shell that started the daemon, or the project slug is wrong (Linear returns 0 issues silently).
+- **Hook failures** — the `after_create` script runs in `bash -lc` with the workspace as cwd. Inspect `<logs-root>/symphony.log` for stderr capture, then test the script manually in a scratch dir.
 
 ## License
 
