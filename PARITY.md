@@ -40,7 +40,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §3.1.1 Workflow Loader | ✅ | `src/workflow/loader.ts` | gray-matter front matter + Markdown body, trimmed; explicit error on missing/empty/non-mapping front matter |
 | §3.1.2 Config Layer | ✅ | `src/config/{schema,resolve,preflight}.ts` | Zod-validated typed view + env/home expansion + dispatch preflight |
 | §3.1.3 Issue Tracker Client | ✅ | `src/linear/{client,adapter,gateway,issue}.ts` | `LinearGateway` interface + `SdkLinearGateway` over `@linear/sdk`; orchestrator-side fakes use the same interface |
-| §3.1.4 Orchestrator | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | MVP subset (see §F of SPEC-claude.md) |
+| §3.1.4 Orchestrator | ✅ MVP | `src/orchestrator/{orchestrator,state}.ts` | Poll-and-dispatch, bounded concurrency, single fixed-delay retry; reconcile/recover deferred per SPEC-claude.md §F |
 | §3.1.5 Workspace Manager | ✅ | `src/workspace/manager.ts` | Idempotent ensureWorkspace; after_create runs once on creation; before_remove deferred to Phase 2 |
 | §3.1.6 Agent Runner | ✅ deviation | `src/agent/runner.ts` | `claude-agent-sdk` `query()`; turn + stall timeouts; external abort; usage aggregation; SPEC-claude.md §A |
 | §3.1.7 Status Surface (OPTIONAL) | ⚪ Phase 3 | — | Logs only in MVP |
@@ -55,7 +55,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §4.1.2 Workflow Definition | ✅ | `src/workflow/loader.ts` | `WorkflowDefinition = { config, promptTemplate, sourcePath }` |
 | §4.1.3 Service Config (typed view) | ✅ | `src/config/schema.ts` | Zod schema; ResolvedWorkflowConfig narrows api_key after resolve |
 | §4.1.4 Workspace | ✅ | `src/workspace/manager.ts` | Represented by `WorkspaceLocation { path, created, hookResult }` |
-| §4.1.5+ remaining entities (Run, Attempt, etc.) | 🔵 Phase 1/2 | `src/orchestrator/state.ts` | Some fields land in MVP; full lifecycle in Phase 2 |
+| §4.1.5+ remaining entities (Run, Attempt, etc.) | 🟡 Phase 1/2 | `src/orchestrator/state.ts` | IssueRunState + RetryEntry + attempt counters in MVP; full Run/Attempt lifecycle in Phase 2 |
 | §4.2 Stable IDs / normalization | 🔵 Phase 1 | `src/linear/adapter.ts` | |
 
 ## §5. Workflow Specification (Repository Contract)
@@ -79,18 +79,18 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §7. Orchestration State Machine
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §7.1 Issue orchestration states | 🔵 Phase 1 | `src/orchestrator/state.ts` | Subset matching MVP transitions |
-| §7.2 Run attempt lifecycle | 🟡 Phase 1 / Phase 2 | `src/orchestrator/state.ts` | Single-attempt in MVP; multi-turn deferred per `SPEC-claude.md` §C |
-| §7.3 Transition triggers | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | Poll tick + completion only in MVP |
+| §7.1 Issue orchestration states | ✅ MVP | `src/orchestrator/state.ts` | idle / claimed / running / completed / failed / retry_pending |
+| §7.2 Run attempt lifecycle | 🟡 Phase 1 / Phase 2 | `src/orchestrator/state.ts` | attemptCount tracked; multi-turn deferred per `SPEC-claude.md` §C |
+| §7.3 Transition triggers | ✅ MVP | `src/orchestrator/orchestrator.ts` | Poll tick + dispatch result + retry-cooldown elapse |
 | §7.4 Idempotency and recovery rules | ⚪ Phase 2 | — | Restart recovery deferred |
 
 ## §8. Polling, Scheduling, and Reconciliation
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §8.1 Poll loop | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | |
-| §8.2 Candidate selection | 🔵 Phase 1 | `src/linear/client.ts`, `src/orchestrator/orchestrator.ts` | Project filter + active states only in MVP |
-| §8.3 Concurrency control | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | `agent.max_concurrent_agents`; `_by_state` deferred |
-| §8.4 Retry and backoff | 🟡 Phase 1 / Phase 2 | `src/orchestrator/retry.ts` | One fixed-delay retry in MVP; full backoff queue Phase 2 |
+| §8.1 Poll loop | ✅ MVP | `src/orchestrator/orchestrator.ts` | `setTimeout`-driven loop pinned to `polling.interval_ms`; `unref()` so timers don't keep the process alive |
+| §8.2 Candidate selection | ✅ MVP | `src/orchestrator/orchestrator.ts` | Project + active-states filter; busy/completed/failed/cooldown skips |
+| §8.3 Concurrency control | ✅ MVP | `src/orchestrator/orchestrator.ts` | `busyCount() < max_concurrent_agents`; `_by_state` Phase 2 |
+| §8.4 Retry and backoff | 🟡 Phase 1 / Phase 2 | `src/orchestrator/orchestrator.ts` | One 30 s fixed-delay retry, then mark failed; exponential queue Phase 2 |
 | §8.5 Active run reconciliation | ⚪ Phase 2 | — | |
 | §8.6 Startup terminal workspace cleanup | ⚪ Phase 2 | — | |
 
@@ -163,12 +163,12 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §16. Reference Algorithms
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §16.1 Service startup | 🔵 Phase 1 | `bin/claude-symphony.ts` | |
-| §16.2 Poll-and-dispatch tick | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | |
+| §16.1 Service startup | 🔵 Phase 1 | `bin/claude-symphony.ts` | Lands with PARITY task #8 |
+| §16.2 Poll-and-dispatch tick | ✅ MVP | `src/orchestrator/orchestrator.ts` | `Orchestrator.tick()` |
 | §16.3 Reconcile active runs | ⚪ Phase 2 | — | |
-| §16.4 Dispatch one issue | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | |
+| §16.4 Dispatch one issue | ✅ MVP | `src/orchestrator/orchestrator.ts` | `dispatchOne` ties workspace + prompt + agent runner |
 | §16.5 Worker attempt | 🟡 Phase 1 | `src/agent/runner.ts` | Single-turn variant complete; multi-turn loop deferred per SPEC-claude.md §C |
-| §16.6 Worker exit + retry handling | 🟡 Phase 1 | `src/orchestrator/retry.ts` | Single retry |
+| §16.6 Worker exit + retry handling | 🟡 Phase 1 | `src/orchestrator/orchestrator.ts` | One fixed-delay retry, then `failed` |
 
 ## §17. Test and Validation Matrix
 | Spec | Status | Module | Notes |
@@ -176,7 +176,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §17.1 Workflow + config parsing | ✅ | `tests/config/`, `tests/workflow/` | 43 vitest tests; ~92% line / 85% branch coverage on covered modules |
 | §17.2 Workspace manager + safety | ✅ | `tests/workspace/`, `tests/util/path-safety.test.ts` | 24 vitest tests covering idempotency, hook execution, env injection, timeout-kill, path-safety guards |
 | §17.3 Issue tracker client | ✅ | `tests/linear/` | 32 vitest tests against a stub `IssuesQueryClient`: pagination, filter shape, adapter integration, identifier parser, error wrapping |
-| §17.4 Orchestrator dispatch + retry | 🔵 Phase 1 | `tests/orchestrator/` | Fake clock |
+| §17.4 Orchestrator dispatch + retry | ✅ MVP | `tests/orchestrator/` | 16 vitest tests: state lifecycle, dispatch, concurrency cap, retry cooldown, second-failure → failed, fetch-error survival |
 | §17.5 Coding-agent app-server client | ✅ deviation | `tests/agent/` | 23 vitest tests with fake QueryFactory: prompt rendering edge cases, options mapping, happy path, result-subtype error mapping, abort/turn/stall timeouts |
 | §17.6 Observability | 🔵 Phase 1 | `tests/observability/` | Log shape assertions |
 | §17.7 CLI and host lifecycle | 🔵 Phase 1 | `tests/cli.test.ts` | Smoke + signal handling |
