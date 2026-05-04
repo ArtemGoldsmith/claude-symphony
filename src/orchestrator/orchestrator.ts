@@ -196,10 +196,9 @@ export class Orchestrator {
         this.scheduleNextTick();
       }
     }, this.deps.config.polling.interval_ms);
-    // The timer must not keep the Node event loop alive past `stop()`.
-    if (typeof this.nextTickTimer.unref === 'function') {
-      this.nextTickTimer.unref();
-    }
+    // Intentionally NOT unref()'d — the timer is what keeps the Node process
+    // alive between ticks. stop() clears the timer explicitly, so the process
+    // exits cleanly through SIGINT/SIGTERM in bin/claude-symphony.ts.
   }
 
   private emit(event: OrchestratorEvent): void {
