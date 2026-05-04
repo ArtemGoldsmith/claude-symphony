@@ -86,6 +86,7 @@ agent:
 claude:
   mcp_servers:
     linear:
+      type: http
       url: https://mcp.linear.app/mcp
 ---
 

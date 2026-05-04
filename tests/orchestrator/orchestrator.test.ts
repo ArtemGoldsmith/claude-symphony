@@ -46,7 +46,7 @@ function makeConfig(overrides?: { maxConcurrent?: number }): ResolvedWorkflowCon
     polling: { interval_ms: 5_000 },
     agent: { max_concurrent_agents: overrides?.maxConcurrent ?? 2 },
     claude: {
-      mcp_servers: { linear: { url: 'https://mcp.linear.app/mcp' } },
+      mcp_servers: { linear: { type: 'http', url: 'https://mcp.linear.app/mcp' } },
     },
   });
   return resolveConfig(cfg, { LINEAR_API_KEY: 'lin_test' });
@@ -865,7 +865,7 @@ describe('Orchestrator startup recovery', () => {
       workspace: { root },
       polling: { interval_ms: 5_000 },
       agent: { max_concurrent_agents: 1 },
-      claude: { mcp_servers: { linear: { url: 'https://mcp.linear.app/mcp' } } },
+      claude: { mcp_servers: { linear: { type: 'http', url: 'https://mcp.linear.app/mcp' } } },
     });
     return resolveConfig(cfg, { LINEAR_API_KEY: 'lin_test' });
   }

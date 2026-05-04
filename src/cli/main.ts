@@ -104,9 +104,12 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
   const definition = await loadWorkflow(args.workflowPath);
   const validated = parseWorkflowConfig(definition.config);
   const resolved = resolveConfig(validated, process.env);
-  preflightConfig(resolved);
+  const preflight = preflightConfig(resolved, definition.config);
 
   const logger = createLogger({ logsRoot: args.logsRoot });
+  for (const warning of preflight.warnings) {
+    logger.warn({ kind: 'preflight' }, warning);
+  }
   logger.info(
     {
       workflowPath: definition.sourcePath,
