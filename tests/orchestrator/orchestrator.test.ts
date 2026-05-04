@@ -39,12 +39,16 @@ function makeIssue(overrides: Partial<Issue> & Pick<Issue, 'id' | 'identifier'>)
   };
 }
 
-function makeConfig(overrides?: { maxConcurrent?: number }): ResolvedWorkflowConfig {
+function makeConfig(overrides?: {
+  maxConcurrent?: number;
+  hooks?: { before_run?: string; after_run?: string };
+}): ResolvedWorkflowConfig {
   const cfg = parseWorkflowConfig({
     tracker: { kind: 'linear', project_slug: 'chronicle' },
     workspace: { root: '/tmp/workspaces' },
     polling: { interval_ms: 5_000 },
     agent: { max_concurrent_agents: overrides?.maxConcurrent ?? 2 },
+    ...(overrides?.hooks ? { hooks: overrides.hooks } : {}),
     claude: {
       mcp_servers: { linear: { type: 'http', url: 'https://mcp.linear.app/mcp' } },
     },
@@ -845,6 +849,107 @@ describe('Orchestrator.tick — blocker gate + sort integration', () => {
 
     // Blocked Todo dropped; remaining sorted by priority: TOP (2) then LOW (3).
     expect(fakes.workspaceCalls).toEqual(['CHR-TOP', 'CHR-LOW']);
+  });
+});
+
+describe('Orchestrator lifecycle hooks (before_run / after_run)', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lifecycle-'));
+    // The fake workspace manager points each issue at <root>/<identifier>;
+    // create that dir so the lifecycle hooks have a valid cwd.
+    await fs.mkdir(path.join(workspaceRoot, 'CHR-1'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  it('runs before_run before agent dispatch and after_run after, in workspace cwd', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const fakes = buildFakes({ candidates, postSuccessLinearState: 'Done' });
+    // Override workspace fake to use the real tempdir per identifier.
+    (fakes.workspace as unknown as { pathFor: (i: string) => string }).pathFor = (
+      identifier: string,
+    ) => path.join(workspaceRoot, identifier);
+    (fakes.workspace as unknown as { ensureWorkspace: typeof fakes.workspace.ensureWorkspace }).ensureWorkspace = vi.fn(
+      async (issue: Issue) => ({
+        path: path.join(workspaceRoot, issue.identifier),
+        created: true,
+        hookResult: null,
+      }),
+    );
+
+    const beforeMarker = path.join(workspaceRoot, 'CHR-1', 'before-ran');
+    const afterMarker = path.join(workspaceRoot, 'CHR-1', 'after-ran');
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig({
+        hooks: {
+          before_run: `touch '${beforeMarker}'`,
+          after_run: `touch '${afterMarker}'`,
+        },
+      }),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+
+    expect(await fs.stat(beforeMarker).then((s) => s.isFile())).toBe(true);
+    expect(await fs.stat(afterMarker).then((s) => s.isFile())).toBe(true);
+  });
+
+  it('runs after_run even when the agent fails', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const failResult: AgentRunResult = {
+      exitReason: 'error',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        totalCostUsd: null,
+      },
+      durationMs: 5,
+      finalText: '',
+      numTurns: null,
+      errorMessage: 'sim',
+      sessionId: null,
+    };
+    const fakes = buildFakes({ candidates, agentResult: failResult });
+    (fakes.workspace as unknown as { pathFor: (i: string) => string }).pathFor = (
+      identifier: string,
+    ) => path.join(workspaceRoot, identifier);
+    (fakes.workspace as unknown as { ensureWorkspace: typeof fakes.workspace.ensureWorkspace }).ensureWorkspace = vi.fn(
+      async (issue: Issue) => ({
+        path: path.join(workspaceRoot, issue.identifier),
+        created: true,
+        hookResult: null,
+      }),
+    );
+
+    const afterMarker = path.join(workspaceRoot, 'CHR-1', 'after-ran-after-fail');
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig({
+        hooks: { after_run: `touch '${afterMarker}'` },
+      }),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(await fs.stat(afterMarker).then((s) => s.isFile())).toBe(true);
   });
 });
 

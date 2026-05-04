@@ -22,6 +22,7 @@ import type { Issue } from '../linear/issue.js';
 import type { WorkspaceManager } from '../workspace/manager.js';
 import { AgentRunner, type AgentRunResult } from '../agent/runner.js';
 import { buildIssueView, renderPrompt } from '../agent/prompt.js';
+import { HookExecutionError, runHook } from '../workspace/hooks.js';
 
 export interface OrchestratorEvent {
   type:
@@ -306,6 +307,7 @@ export class Orchestrator {
 
     try {
       const ws = await this.deps.workspace.ensureWorkspace(issue);
+      await this.runLifecycleHook('before_run', issue, ws.path);
       const resumeSessionId = this.state.sessionIdFor(issue.id) ?? undefined;
       const attemptNumber = this.state.attemptCount(issue.id);
       const prompt = resumeSessionId
@@ -357,6 +359,53 @@ export class Orchestrator {
       this.handleFailure(issue, (err as Error).message);
     } finally {
       this.state.clearInflight(issue.id);
+      // after_run runs whether the dispatch succeeded, failed, or threw.
+      // Failures inside the hook itself are logged as agent_stderr-shaped
+      // events and do NOT fail the dispatch retroactively (it's already
+      // been resolved one way or another above).
+      const wsPathForAfter = this.deps.workspace.pathFor(issue.identifier);
+      await this.runLifecycleHook('after_run', issue, wsPathForAfter, true);
+    }
+  }
+
+  /**
+   * Run a hooks.{name} script in the per-issue workspace cwd. Failures in
+   * before_run propagate (so the dispatch fails fast); failures in after_run
+   * are logged as warnings only (the dispatch's outcome has already been
+   * recorded). When `tolerateFailure` is true, the error is swallowed.
+   */
+  private async runLifecycleHook(
+    name: 'before_run' | 'after_run',
+    issue: Issue,
+    workspacePath: string,
+    tolerateFailure = false,
+  ): Promise<void> {
+    const script = this.deps.config.hooks[name];
+    if (!script) return;
+    try {
+      await runHook(
+        script,
+        workspacePath,
+        {
+          ISSUE_ID: issue.id,
+          ISSUE_IDENTIFIER: issue.identifier,
+          ISSUE_TITLE: issue.title,
+          ISSUE_URL: issue.url ?? '',
+          WORKSPACE_PATH: workspacePath,
+        },
+        { timeoutMs: this.deps.config.hooks.timeout_ms },
+      );
+    } catch (err) {
+      if (err instanceof HookExecutionError) {
+        this.emit({
+          type: 'agent_stderr',
+          at: this.deps.now?.() ?? Date.now(),
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+          stderrChunk: `[${name}] ${err.message}\n${err.stderr}`,
+        });
+      }
+      if (!tolerateFailure) throw err;
     }
   }
 

@@ -22,7 +22,7 @@ describe('parseWorkflowConfig', () => {
     ]);
     expect(result.polling.interval_ms).toBe(5_000);
     expect(result.workspace.root).toBe('~/code/workspaces/chronicle');
-    expect(result.hooks).toEqual({});
+    expect(result.hooks).toEqual({ timeout_ms: 10 * 60_000 });
     expect(result.agent.max_concurrent_agents).toBe(5);
     expect(result.claude.permission_mode).toBe('default');
     expect(result.claude.disallowed_tools).toEqual([]);

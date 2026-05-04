@@ -40,8 +40,16 @@ export const HooksConfigSchema = z
   .object({
     // Shell scripts. The runner invokes them via `bash -lc`. `$VAR` inside the
     // script is expanded by the shell, not by claude-symphony.
+    /** Runs ONCE when a per-issue workspace is first created. */
     after_create: z.string().optional(),
+    /** Phase 2: runs once just before the workspace is removed. */
     before_remove: z.string().optional(),
+    /** Runs before EACH agent dispatch in the workspace. */
+    before_run: z.string().optional(),
+    /** Runs after EACH agent dispatch (success or failure) in the workspace. */
+    after_run: z.string().optional(),
+    /** Wall-clock cap for any single hook invocation. Default 10 minutes. */
+    timeout_ms: z.number().int().positive().default(10 * 60_000),
   })
   .default({});
 export type HooksConfig = z.infer<typeof HooksConfigSchema>;

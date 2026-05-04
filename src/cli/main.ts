@@ -134,6 +134,7 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
   const workspaceManager = new WorkspaceManager({
     root: resolved.workspace.root,
     afterCreateHook: resolved.hooks.after_create,
+    hookTimeoutMs: resolved.hooks.timeout_ms,
   });
 
   const queryFactory = deps.queryFactory ?? (await createSdkQueryFactory());

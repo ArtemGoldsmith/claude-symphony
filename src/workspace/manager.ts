@@ -22,6 +22,8 @@ export interface WorkspaceManagerOptions {
   root: string;
   /** Optional after_create hook script body (already validated). */
   afterCreateHook?: string | undefined;
+  /** Optional per-hook timeout in milliseconds. Defaults to runHook's default. */
+  hookTimeoutMs?: number;
 }
 
 /**
@@ -57,13 +59,20 @@ export class WorkspaceManager {
 
     let hookResult: HookResult | null = null;
     if (!existedBefore && this.options.afterCreateHook) {
-      hookResult = await runHook(this.options.afterCreateHook, workspacePath, {
-        ISSUE_ID: issue.id,
-        ISSUE_IDENTIFIER: issue.identifier,
-        ISSUE_TITLE: issue.title,
-        ISSUE_URL: issue.url ?? '',
-        WORKSPACE_PATH: workspacePath,
-      });
+      hookResult = await runHook(
+        this.options.afterCreateHook,
+        workspacePath,
+        {
+          ISSUE_ID: issue.id,
+          ISSUE_IDENTIFIER: issue.identifier,
+          ISSUE_TITLE: issue.title,
+          ISSUE_URL: issue.url ?? '',
+          WORKSPACE_PATH: workspacePath,
+        },
+        this.options.hookTimeoutMs !== undefined
+          ? { timeoutMs: this.options.hookTimeoutMs }
+          : {},
+      );
     }
 
     return {
