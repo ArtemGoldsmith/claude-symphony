@@ -44,7 +44,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §3.1.5 Workspace Manager | ✅ | `src/workspace/manager.ts` | Idempotent ensureWorkspace; after_create runs once on creation; before_remove deferred to Phase 2 |
 | §3.1.6 Agent Runner | ✅ deviation | `src/agent/runner.ts` | `claude-agent-sdk` `query()`; turn + stall timeouts; external abort; usage aggregation; SPEC-claude.md §A |
 | §3.1.7 Status Surface (OPTIONAL) | ⚪ Phase 3 | — | Logs only in MVP |
-| §3.1.8 Logging | 🔵 Phase 1 | `src/observability/log.ts` | `pino` JSONL |
+| §3.1.8 Logging | ✅ | `src/observability/log.ts` | `pino` multistream: synchronous JSONL file + stdout (pretty in TTY, raw otherwise); `writeOrchestratorEvent` projects events to log records |
 | §3.2 Abstraction Layers | 🟡 | source tree | Folder layout mirrors the spec's six layers |
 | §3.3 External Dependencies | 🟡 | `package.json`, `README.md` | Updated as we add each dep |
 
@@ -135,8 +135,8 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §13. Logging, Status, and Observability
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §13.1 Logging conventions | 🔵 Phase 1 | `src/observability/log.ts` | `pino` JSONL, structured fields per spec |
-| §13.2 Logging outputs and sinks | 🔵 Phase 1 | `src/observability/log.ts` | File + stdout |
+| §13.1 Logging conventions | ✅ | `src/observability/log.ts` | JSONL with `service` base field + per-event fields (event, at, issueId, issueIdentifier, plus type-specific extras) |
+| §13.2 Logging outputs and sinks | ✅ | `src/observability/log.ts` | File sink (sync, append) + stdout sink at info+; pino multistream |
 | §13.3 Runtime snapshot / monitoring interface | ⚪ Phase 3 | — | |
 | §13.4 OPTIONAL human-readable status surface | ⚪ Phase 3 | — | |
 | §13.5 Session metrics and token accounting | 🟡 Phase 1 | `src/agent/runner.ts` | `AggregatedUsage` synthesized from result message `usage` + `total_cost_usd`; once-per-query semantics per Q2 |
@@ -149,21 +149,21 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §14.1 Failure classes | 🔵 Phase 1 | `src/orchestrator/errors.ts` | Subset for MVP |
 | §14.2 Recovery behavior | 🟡 Phase 1 / Phase 2 | `src/orchestrator/orchestrator.ts` | One retry only in MVP |
 | §14.3 Partial state recovery (restart) | ⚪ Phase 2 | — | |
-| §14.4 Operator intervention points | 🟡 Phase 1 | `bin/claude-symphony.ts`, logs | Logs + manual workspace inspection |
+| §14.4 Operator intervention points | ✅ MVP | `bin/claude-symphony.ts`, logs | SIGINT/SIGTERM graceful drain via `orchestrator.stop()`; structured log inspection |
 
 ## §15. Security and Operational Safety
 | Spec | Status | Module | Notes |
 |---|---|---|---|
 | §15.1 Trust boundary assumption | 🔵 Phase 1 | `README.md`, `SPEC-claude.md` §A.5 | Document the trusted-environment posture |
 | §15.2 Filesystem safety requirements | 🟡 Phase 1 | `src/util/path-safety.ts` | Workspace-side enforcement done via `assertSafeIssueIdentifier` + `joinWithinRoot`; agent-side enforcement (Q3) lands with agent runner |
-| §15.3 Secret handling | 🟡 Phase 1 | `src/config/resolve.ts` | `$VAR` indirection works; "never log resolved tokens" guarantee enforced once logging lands (PARITY row §13.1) |
+| §15.3 Secret handling | ✅ | `src/config/resolve.ts`, `src/observability/log.ts` | `$VAR` indirection at config load; logger never receives api_key (writeOrchestratorEvent filters event payloads to known-safe fields) |
 | §15.4 Hook script safety | ✅ | `src/workspace/hooks.ts` | `bash -lc` in workspace cwd, detached process group for clean timeout-kill, captured stdout/stderr, exit-code propagation |
 | §15.5 Harness hardening guidance | 🟡 | `README.md` | Operator-facing notes |
 
 ## §16. Reference Algorithms
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §16.1 Service startup | 🔵 Phase 1 | `bin/claude-symphony.ts` | Lands with PARITY task #8 |
+| §16.1 Service startup | ✅ | `src/cli/main.ts`, `bin/claude-symphony.ts` | `runCli(argv)` boots the orchestrator from a WORKFLOW.md path; bin entry adds SIGINT/SIGTERM graceful shutdown |
 | §16.2 Poll-and-dispatch tick | ✅ MVP | `src/orchestrator/orchestrator.ts` | `Orchestrator.tick()` |
 | §16.3 Reconcile active runs | ⚪ Phase 2 | — | |
 | §16.4 Dispatch one issue | ✅ MVP | `src/orchestrator/orchestrator.ts` | `dispatchOne` ties workspace + prompt + agent runner |
@@ -178,8 +178,8 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §17.3 Issue tracker client | ✅ | `tests/linear/` | 32 vitest tests against a stub `IssuesQueryClient`: pagination, filter shape, adapter integration, identifier parser, error wrapping |
 | §17.4 Orchestrator dispatch + retry | ✅ MVP | `tests/orchestrator/` | 16 vitest tests: state lifecycle, dispatch, concurrency cap, retry cooldown, second-failure → failed, fetch-error survival |
 | §17.5 Coding-agent app-server client | ✅ deviation | `tests/agent/` | 23 vitest tests with fake QueryFactory: prompt rendering edge cases, options mapping, happy path, result-subtype error mapping, abort/turn/stall timeouts |
-| §17.6 Observability | 🔵 Phase 1 | `tests/observability/` | Log shape assertions |
-| §17.7 CLI and host lifecycle | 🔵 Phase 1 | `tests/cli.test.ts` | Smoke + signal handling |
+| §17.6 Observability | ✅ | `tests/observability/log.test.ts` | 6 vitest tests: JSONL file write, custom filename, event-to-record projections per event type and level |
+| §17.7 CLI and host lifecycle | ✅ MVP | `tests/cli/main.test.ts` | 10 tests: parseArgs, --logs-root / --port / --help / unknown flags / extra positionals; runCli end-to-end with stub agent + linear; preflight failure surfacing |
 | §17.8 Real integration profile | 🔵 Phase 1 | `tests/e2e/` | One end-to-end run against real Chronicle ticket = MVP DoD |
 
 ## §18. Implementation Checklist (Definition of Done)

@@ -1,0 +1,153 @@
+// SPEC.md §16.1 — Service startup; CLI argument parsing.
+// PARITY.md rows: §16.1, §17.7.
+//
+// `runCli(argv)` is exported separately from the bin/* entry so unit tests
+// can drive it deterministically. The bin entry just calls runCli(process.argv).
+
+import { LinearClient } from '@linear/sdk';
+
+import { parseWorkflowConfig } from '../config/schema.js';
+import { resolveConfig } from '../config/resolve.js';
+import { preflightConfig } from '../config/preflight.js';
+import { loadWorkflow } from '../workflow/loader.js';
+import { createLinearGateway } from '../linear/client.js';
+import { WorkspaceManager } from '../workspace/manager.js';
+import { AgentRunner, createSdkQueryFactory, type QueryFactory } from '../agent/runner.js';
+import { Orchestrator } from '../orchestrator/orchestrator.js';
+import { createLogger, writeOrchestratorEvent } from '../observability/log.js';
+
+export class CliError extends Error {
+  constructor(
+    message: string,
+    public readonly exitCode: number = 1,
+  ) {
+    super(message);
+    this.name = 'CliError';
+  }
+}
+
+export interface ParsedArgs {
+  workflowPath: string;
+  logsRoot: string;
+  /** Reserved; honoured in Phase 3 when the status surface lands. */
+  port: number | null;
+}
+
+export function parseArgs(argv: string[]): ParsedArgs {
+  let workflowPath: string | null = null;
+  let logsRoot = './log';
+  let port: number | null = null;
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === '--logs-root') {
+      const next = argv[i + 1];
+      if (!next) throw new CliError('--logs-root requires a value');
+      logsRoot = next;
+      i += 1;
+    } else if (arg.startsWith('--logs-root=')) {
+      logsRoot = arg.slice('--logs-root='.length);
+    } else if (arg === '--port') {
+      const next = argv[i + 1];
+      if (!next) throw new CliError('--port requires a value');
+      port = Number.parseInt(next, 10);
+      if (!Number.isFinite(port)) throw new CliError(`--port must be an integer (got: ${next})`);
+      i += 1;
+    } else if (arg.startsWith('--port=')) {
+      port = Number.parseInt(arg.slice('--port='.length), 10);
+      if (!Number.isFinite(port)) throw new CliError('--port must be an integer');
+    } else if (arg === '--help' || arg === '-h') {
+      throw new CliError(USAGE, 0);
+    } else if (arg.startsWith('--')) {
+      throw new CliError(`unknown flag: ${arg}\n\n${USAGE}`);
+    } else {
+      if (workflowPath !== null) {
+        throw new CliError(`unexpected extra positional arg: ${arg}\n\n${USAGE}`);
+      }
+      workflowPath = arg;
+    }
+  }
+
+  if (workflowPath === null) {
+    throw new CliError(`missing required WORKFLOW.md path\n\n${USAGE}`);
+  }
+  return { workflowPath, logsRoot, port };
+}
+
+export const USAGE = `Usage: claude-symphony <WORKFLOW.md> [--logs-root DIR] [--port N]
+
+Arguments:
+  WORKFLOW.md        Path to the workflow file (YAML front matter + Markdown body)
+
+Options:
+  --logs-root DIR    Directory for structured log output (default: ./log)
+  --port N           Reserved for the Phase 3 status surface; ignored in MVP
+  -h, --help         Print this help`;
+
+export interface RunCliDeps {
+  /** Override the SDK query factory (tests). */
+  queryFactory?: QueryFactory;
+  /** Override the LinearClient constructor (tests). */
+  linearClientFactory?: (apiKey: string) => InstanceType<typeof LinearClient>;
+}
+
+/**
+ * Boot the orchestrator from CLI arguments, returning a handle the bin
+ * entry can use for graceful shutdown. Resolves once the first poll tick
+ * has completed (the orchestrator is by then driving its own timer).
+ */
+export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
+  stop: () => Promise<void>;
+}> {
+  const args = parseArgs(argv);
+
+  const definition = await loadWorkflow(args.workflowPath);
+  const validated = parseWorkflowConfig(definition.config);
+  const resolved = resolveConfig(validated, process.env);
+  preflightConfig(resolved);
+
+  const logger = createLogger({ logsRoot: args.logsRoot });
+  logger.info(
+    {
+      workflowPath: definition.sourcePath,
+      logsRoot: args.logsRoot,
+      project: resolved.tracker.project_slug,
+      activeStates: resolved.tracker.active_states,
+      maxConcurrent: resolved.agent.max_concurrent_agents,
+      pollIntervalMs: resolved.polling.interval_ms,
+    },
+    'claude-symphony starting',
+  );
+
+  const linearClient = deps.linearClientFactory
+    ? deps.linearClientFactory(resolved.tracker.api_key)
+    : new LinearClient({ apiKey: resolved.tracker.api_key });
+  const linearGateway = createLinearGateway(linearClient);
+
+  const workspaceManager = new WorkspaceManager({
+    root: resolved.workspace.root,
+    afterCreateHook: resolved.hooks.after_create,
+  });
+
+  const queryFactory = deps.queryFactory ?? (await createSdkQueryFactory());
+  const agentRunner = new AgentRunner(queryFactory);
+
+  const orchestrator = new Orchestrator({
+    linear: linearGateway,
+    workspace: workspaceManager,
+    agent: agentRunner,
+    promptTemplate: definition.promptTemplate,
+    config: resolved,
+    onEvent: (event) => writeOrchestratorEvent(logger, event),
+  });
+
+  await orchestrator.start();
+
+  return {
+    stop: async () => {
+      logger.info('claude-symphony stopping');
+      await orchestrator.stop();
+      logger.info('claude-symphony stopped');
+    },
+  };
+}
