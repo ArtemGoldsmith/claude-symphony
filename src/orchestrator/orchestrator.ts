@@ -13,6 +13,9 @@
 // (§14.3), continuation (§12.3), and stall-detection feedback (§10.6)
 // are Phase 2.
 
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
 import type { ResolvedWorkflowConfig } from '../config/resolve.js';
 import type { LinearGateway } from '../linear/gateway.js';
 import type { Issue } from '../linear/issue.js';
@@ -31,6 +34,7 @@ export interface OrchestratorEvent {
     | 'retry_scheduled'
     | 'retry_skipped'
     | 'reconcile_aborted'
+    | 'startup_recovery'
     | 'agent_stderr';
   at: number;
   issueId?: string;
@@ -47,6 +51,13 @@ export interface OrchestratorEvent {
   linearStateAfterRun?: string;
   /** Raw stderr chunk from the agent subprocess, when type is 'agent_stderr'. */
   stderrChunk?: string;
+  /**
+   * When type === 'startup_recovery', list of issue identifiers whose
+   * per-issue worktrees were found on disk at boot time. They will be
+   * picked up by the next poll tick if Linear still has them in active
+   * states; otherwise they remain on disk for operator inspection.
+   */
+  recoveredIssueIdentifiers?: string[];
 }
 
 export interface OrchestratorDeps {
@@ -105,9 +116,41 @@ export class Orchestrator {
   /** Start the poll loop. Resolves once the orchestrator has scheduled its first tick. */
   async start(): Promise<void> {
     if (this.running) return;
+    await this.recoverFromDisk();
     this.running = true;
     await this.tick();
     this.scheduleNextTick();
+  }
+
+  /**
+   * Restart-time recovery scan: enumerate per-issue worktrees that already
+   * exist on disk and emit a startup_recovery event listing them. Existing
+   * worktrees survive across daemon restarts; the next poll tick will
+   * pick up any whose Linear state is still active and continue work
+   * (sessionId is lost across restart, so the resumed agent starts from
+   * a fresh SDK session — full session-state persistence is Phase 3).
+   * Worktrees for issues that have moved terminal stay on disk for
+   * operator inspection; auto-cleanup is also Phase 3.
+   */
+  private async recoverFromDisk(): Promise<void> {
+    const root = path.resolve(this.deps.config.workspace.root);
+    let entries: ReadonlyArray<{ name: string; isDirectory: () => boolean }>;
+    try {
+      entries = await fs.readdir(root, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+    const recovered = entries
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .filter((name) => /^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(name))
+      .sort();
+    this.emit({
+      type: 'startup_recovery',
+      at: this.deps.now?.() ?? Date.now(),
+      recoveredIssueIdentifiers: recovered,
+    });
   }
 
   /** Stop polling and wait for in-flight dispatches to drain. */

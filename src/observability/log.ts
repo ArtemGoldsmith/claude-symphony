@@ -98,6 +98,13 @@ export function writeOrchestratorEvent(logger: Logger, event: OrchestratorEvent)
       logger.warn({ ...base, error: event.error }, `failed ${event.issueIdentifier}`);
       break;
 
+    case 'startup_recovery':
+      logger.info(
+        { ...base, recoveredIssueIdentifiers: event.recoveredIssueIdentifiers ?? [] },
+        `startup recovery: found ${event.recoveredIssueIdentifiers?.length ?? 0} existing per-issue worktrees`,
+      );
+      break;
+
     case 'reconcile_aborted':
       logger.warn(
         { ...base, linearStateAfterRun: event.linearStateAfterRun },

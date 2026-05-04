@@ -1,6 +1,8 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AgentRunner,
@@ -723,6 +725,86 @@ describe('Orchestrator.tick — failure handling', () => {
     const tickEnd = fakes.events.find((e) => e.type === 'tick_completed');
     expect(tickEnd?.error).toMatch(/rate limited/);
     expect(fakes.workspaceCalls).toEqual([]);
+  });
+});
+
+describe('Orchestrator startup recovery', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'recover-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  function configWithRoot(root: string) {
+    const cfg = parseWorkflowConfig({
+      tracker: { kind: 'linear', project_slug: 'chronicle' },
+      workspace: { root },
+      polling: { interval_ms: 5_000 },
+      agent: { max_concurrent_agents: 1 },
+      claude: { mcp_servers: { linear: { url: 'https://mcp.linear.app/mcp' } } },
+    });
+    return resolveConfig(cfg, { LINEAR_API_KEY: 'lin_test' });
+  }
+
+  it('emits startup_recovery with no identifiers when the workspace root is empty', async () => {
+    const fakes = buildFakes({ candidates: [] });
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: configWithRoot(workspaceRoot),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.start();
+    await orchestrator.stop();
+
+    const recovery = fakes.events.find((e) => e.type === 'startup_recovery');
+    expect(recovery).toBeDefined();
+    expect(recovery?.recoveredIssueIdentifiers).toEqual([]);
+  });
+
+  it('emits startup_recovery listing existing per-issue worktree dirs', async () => {
+    await fs.mkdir(path.join(workspaceRoot, 'CHR-1'));
+    await fs.mkdir(path.join(workspaceRoot, 'CHR-7'));
+    await fs.mkdir(path.join(workspaceRoot, 'not-an-issue-dir'));
+    await fs.writeFile(path.join(workspaceRoot, 'README'), 'x');
+
+    const fakes = buildFakes({ candidates: [] });
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: configWithRoot(workspaceRoot),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.start();
+    await orchestrator.stop();
+
+    const recovery = fakes.events.find((e) => e.type === 'startup_recovery');
+    expect(recovery?.recoveredIssueIdentifiers).toEqual(['CHR-1', 'CHR-7']);
+  });
+
+  it('survives a missing workspace root without throwing', async () => {
+    const fakes = buildFakes({ candidates: [] });
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: configWithRoot(path.join(workspaceRoot, 'does-not-exist')),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await expect(orchestrator.start()).resolves.toBeUndefined();
+    await orchestrator.stop();
   });
 });
 
