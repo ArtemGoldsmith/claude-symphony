@@ -42,7 +42,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §3.1.3 Issue Tracker Client | ✅ | `src/linear/{client,adapter,gateway,issue}.ts` | `LinearGateway` interface + `SdkLinearGateway` over `@linear/sdk`; orchestrator-side fakes use the same interface |
 | §3.1.4 Orchestrator | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | MVP subset (see §F of SPEC-claude.md) |
 | §3.1.5 Workspace Manager | ✅ | `src/workspace/manager.ts` | Idempotent ensureWorkspace; after_create runs once on creation; before_remove deferred to Phase 2 |
-| §3.1.6 Agent Runner | 🔵 Phase 1 | `src/agent/runner.ts` | `claude-agent-sdk`; replaces §10 wholesale per `SPEC-claude.md` §A |
+| §3.1.6 Agent Runner | ✅ deviation | `src/agent/runner.ts` | `claude-agent-sdk` `query()`; turn + stall timeouts; external abort; usage aggregation; SPEC-claude.md §A |
 | §3.1.7 Status Surface (OPTIONAL) | ⚪ Phase 3 | — | Logs only in MVP |
 | §3.1.8 Logging | 🔵 Phase 1 | `src/observability/log.ts` | `pino` JSONL |
 | §3.2 Abstraction Layers | 🟡 | source tree | Folder layout mirrors the spec's six layers |
@@ -65,7 +65,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §5.2 File format | ✅ | `src/workflow/loader.ts` | YAML front matter + Markdown body via gray-matter |
 | §5.3.1–§5.3.5 `tracker`/`polling`/`workspace`/`hooks`/`agent` | ✅ | `src/config/schema.ts` | Preserved field-for-field; defaults applied |
 | §5.3.6 `codex` block | ✅ deviation | `src/config/schema.ts` | Replaced by `claude:` block per `SPEC-claude.md` §B; MVP guard rejects `max_turns > 1` |
-| §5.4 Prompt Template Contract | 🔵 Phase 1 | `src/agent/prompt.ts` | Liquid-style `{{ }}` substitution; strict unknown-variable error |
+| §5.4 Prompt Template Contract | 🟡 Phase 1 / Phase 2 | `src/agent/prompt.ts` | `{{ name }}` and `{{ name.field }}` substitution with strict unknown-variable error; `{% if %}` / filters deferred to Phase 2 alongside continuation/turns |
 | §5.5 Workflow validation and error surface | ✅ | `src/workflow/loader.ts`, `src/config/schema.ts` | WorkflowLoadError with file path; Zod errors with field path |
 
 ## §6. Configuration Specification
@@ -106,14 +106,14 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §10. Agent Runner Protocol
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §10 entire chapter | 🟡 deviation | `src/agent/runner.ts` | Wholesale replacement — see `SPEC-claude.md` §A |
-| §10.1 Launch contract | 🟡 deviation | `src/agent/runner.ts` | `query()` factory call, no subprocess |
-| §10.2 Session startup | 🟡 deviation | `src/agent/runner.ts` | SDK `Options` from `claude:` block |
-| §10.3 Streaming turn processing | 🟡 deviation | `src/agent/runner.ts` | Async-iterate SDK messages |
-| §10.4 Emitted events | 🟡 deviation | `src/agent/runner.ts` | Mapped per `SPEC-claude.md` §A.4 |
-| §10.5 Approval / tool-call policy | 🟡 deviation | `src/agent/runner.ts`, `src/util/path-safety.ts` | `permission_mode` + `disallowed_tools` |
-| §10.6 Timeouts | 🔵 Phase 1 | `src/agent/runner.ts` | Turn + read; stall in Phase 2 |
-| §10.7 Agent runner contract | 🔵 Phase 1 | `src/agent/runner.ts` | |
+| §10 entire chapter | ✅ deviation | `src/agent/runner.ts` | Wholesale replacement — see `SPEC-claude.md` §A |
+| §10.1 Launch contract | ✅ deviation | `src/agent/runner.ts` | `query()` factory call, no subprocess |
+| §10.2 Session startup | ✅ deviation | `src/agent/runner.ts` | SDK `Options` from `claude:` block via `buildQueryOptions` |
+| §10.3 Streaming turn processing | ✅ deviation | `src/agent/runner.ts` | Async-iterate SDK messages until `result` terminator |
+| §10.4 Emitted events | 🟡 deviation | `src/agent/runner.ts` | Result + usage aggregation per `SPEC-claude.md` §A.4; per-turn synthetic events Phase 3 |
+| §10.5 Approval / tool-call policy | ✅ deviation | `src/agent/runner.ts` | `permission_mode` + `allowed_tools` + `disallowed_tools` passed through |
+| §10.6 Timeouts | ✅ Phase 1 | `src/agent/runner.ts` | Turn timeout + stall timeout via AbortController; read_timeout reserved for Phase 2 |
+| §10.7 Agent runner contract | ✅ Phase 1 | `src/agent/runner.ts` | `AgentRunInput` / `AgentRunResult` boundary |
 
 ## §11. Issue Tracker Integration Contract (Linear)
 | Spec | Status | Module | Notes |
@@ -127,10 +127,10 @@ This document is the canonical progress tracker. It is updated **in the same com
 ## §12. Prompt Construction and Context Assembly
 | Spec | Status | Module | Notes |
 |---|---|---|---|
-| §12.1 Inputs | 🔵 Phase 1 | `src/agent/prompt.ts` | Issue + workflow template + attempt counter |
-| §12.2 Rendering rules | 🔵 Phase 1 | `src/agent/prompt.ts` | Strict filter checking; unknown-variable failure |
+| §12.1 Inputs | ✅ | `src/agent/prompt.ts` | `PromptVariables = { issue, attempt }`; `buildIssueView` flattens null fields |
+| §12.2 Rendering rules | 🟡 Phase 1 / Phase 2 | `src/agent/prompt.ts` | Strict unknown-variable failure for `{{ var }}` and `{{ var.field }}`; filters / `{% if %}` Phase 2 |
 | §12.3 Retry/continuation semantics | ⚪ Phase 2 | `src/agent/prompt.ts` | `attempt = null` always in MVP — `SPEC-claude.md` §C |
-| §12.4 Failure semantics | 🔵 Phase 1 | `src/agent/prompt.ts` | Render errors mapped per spec |
+| §12.4 Failure semantics | ✅ | `src/agent/prompt.ts` | `PromptRenderError` includes the offending excerpt for debugging |
 
 ## §13. Logging, Status, and Observability
 | Spec | Status | Module | Notes |
@@ -139,7 +139,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §13.2 Logging outputs and sinks | 🔵 Phase 1 | `src/observability/log.ts` | File + stdout |
 | §13.3 Runtime snapshot / monitoring interface | ⚪ Phase 3 | — | |
 | §13.4 OPTIONAL human-readable status surface | ⚪ Phase 3 | — | |
-| §13.5 Session metrics and token accounting | 🟡 Phase 1 | `src/observability/metrics.ts` | Mapped from SDK `result.usage` — `SPEC-claude.md` Q2 |
+| §13.5 Session metrics and token accounting | 🟡 Phase 1 | `src/agent/runner.ts` | `AggregatedUsage` synthesized from result message `usage` + `total_cost_usd`; once-per-query semantics per Q2 |
 | §13.6 Humanized event summaries (OPTIONAL) | ⚪ Phase 3 | — | |
 | §13.7 OPTIONAL HTTP server extension | ⚪ Phase 3 | — | |
 
@@ -167,7 +167,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §16.2 Poll-and-dispatch tick | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | |
 | §16.3 Reconcile active runs | ⚪ Phase 2 | — | |
 | §16.4 Dispatch one issue | 🔵 Phase 1 | `src/orchestrator/orchestrator.ts` | |
-| §16.5 Worker attempt | 🟡 Phase 1 | `src/agent/runner.ts` | Single-turn variant |
+| §16.5 Worker attempt | 🟡 Phase 1 | `src/agent/runner.ts` | Single-turn variant complete; multi-turn loop deferred per SPEC-claude.md §C |
 | §16.6 Worker exit + retry handling | 🟡 Phase 1 | `src/orchestrator/retry.ts` | Single retry |
 
 ## §17. Test and Validation Matrix
@@ -177,7 +177,7 @@ This document is the canonical progress tracker. It is updated **in the same com
 | §17.2 Workspace manager + safety | ✅ | `tests/workspace/`, `tests/util/path-safety.test.ts` | 24 vitest tests covering idempotency, hook execution, env injection, timeout-kill, path-safety guards |
 | §17.3 Issue tracker client | ✅ | `tests/linear/` | 32 vitest tests against a stub `IssuesQueryClient`: pagination, filter shape, adapter integration, identifier parser, error wrapping |
 | §17.4 Orchestrator dispatch + retry | 🔵 Phase 1 | `tests/orchestrator/` | Fake clock |
-| §17.5 Coding-agent app-server client | 🟡 deviation | `tests/agent/` | Fake `claude-agent-sdk` `query()` |
+| §17.5 Coding-agent app-server client | ✅ deviation | `tests/agent/` | 23 vitest tests with fake QueryFactory: prompt rendering edge cases, options mapping, happy path, result-subtype error mapping, abort/turn/stall timeouts |
 | §17.6 Observability | 🔵 Phase 1 | `tests/observability/` | Log shape assertions |
 | §17.7 CLI and host lifecycle | 🔵 Phase 1 | `tests/cli.test.ts` | Smoke + signal handling |
 | §17.8 Real integration profile | 🔵 Phase 1 | `tests/e2e/` | One end-to-end run against real Chronicle ticket = MVP DoD |
