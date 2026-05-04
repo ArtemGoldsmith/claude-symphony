@@ -17,6 +17,7 @@ export interface SdkResultMessage {
   num_turns?: number;
   result?: string;
   total_cost_usd?: number;
+  session_id?: string;
   usage?: {
     input_tokens?: number | null;
     output_tokens?: number | null;
@@ -25,8 +26,15 @@ export interface SdkResultMessage {
   };
 }
 
+export interface SdkInitSystemMessage {
+  type: 'system';
+  subtype: 'init';
+  session_id?: string;
+}
+
 export type AgentSdkMessage =
   | SdkResultMessage
+  | SdkInitSystemMessage
   | { type: 'assistant' | 'user' | 'system' | string; [k: string]: unknown };
 
 /**
@@ -47,6 +55,12 @@ export interface QueryOptions {
   model?: string;
   maxTurns?: number;
   abortController?: AbortController;
+  /**
+   * SDK session id to resume. The next query() loads the full conversation
+   * history from that session and continues, sharing the same on-disk
+   * transcript file (cwd-local). See SPEC-claude.md §C / Codex review B1.
+   */
+  resume?: string;
   /** Forwarded to claude-agent-sdk so we can capture subprocess stderr. */
   stderr?: (data: string) => void;
   systemPrompt?:
@@ -95,6 +109,13 @@ export interface AgentRunInput {
    * etc.) to the orchestrator log.
    */
   onStderr?: (chunk: string) => void;
+  /**
+   * If set, the runner asks the SDK to resume this prior session id rather
+   * than starting fresh. Used by the orchestrator on continuation dispatches
+   * (post-success-but-issue-still-active) so the agent keeps its prior
+   * context instead of re-discovering everything from scratch.
+   */
+  resumeSessionId?: string;
 }
 
 export interface AgentRunResult {
@@ -106,6 +127,12 @@ export interface AgentRunResult {
   numTurns: number | null;
   /** Set when exitReason is 'error' or a timeout. */
   errorMessage: string | null;
+  /**
+   * SDK session id captured from the init/result message stream. May be
+   * null if the SDK never emitted one (some failure paths). Persist on the
+   * orchestrator for use as `resumeSessionId` on the next dispatch.
+   */
+  sessionId: string | null;
 }
 
 const ZERO_USAGE: AggregatedUsage = {
@@ -132,6 +159,9 @@ export function buildQueryOptions(input: AgentRunInput, abort: AbortController):
   };
   if (input.onStderr) {
     opts.stderr = input.onStderr;
+  }
+  if (input.resumeSessionId) {
+    opts.resume = input.resumeSessionId;
   }
   // SDK requires this flag alongside permissionMode 'bypassPermissions'.
   // Without it the wrapper validation rejects the configuration before any
@@ -207,6 +237,7 @@ export class AgentRunner {
     let finalText = '';
     let numTurns: number | null = null;
     let usage = ZERO_USAGE;
+    let sessionId: string | null = null;
 
     try {
       const stream = this.queryFn({
@@ -216,6 +247,16 @@ export class AgentRunner {
 
       for await (const message of stream) {
         armStallTimer();
+
+        // Capture session_id from whichever message exposes it first.
+        // Init system messages emit it eagerly; the result message also
+        // carries it, so this works for both happy and abort paths.
+        if (sessionId === null) {
+          const sid = (message as { session_id?: unknown }).session_id;
+          if (typeof sid === 'string' && sid.length > 0) {
+            sessionId = sid;
+          }
+        }
 
         if (isResultMessage(message)) {
           finalText = message.result ?? '';
@@ -258,6 +299,7 @@ export class AgentRunner {
       finalText,
       numTurns,
       errorMessage,
+      sessionId,
     };
   }
 }

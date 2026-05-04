@@ -23,6 +23,7 @@ export class OrchestratorState {
   private readonly states = new Map<string, IssueRunState>();
   private readonly retries = new Map<string, RetryEntry>();
   private readonly attempts = new Map<string, number>();
+  private readonly sessionIds = new Map<string, string>();
   private readonly inflight = new Set<Promise<void>>();
 
   stateOf(issueId: string): IssueRunState {
@@ -45,6 +46,23 @@ export class OrchestratorState {
     return this.attempts.get(issueId) ?? 0;
   }
 
+  /**
+   * Most recent SDK session id captured for this issue, or null. Used by the
+   * orchestrator on continuation dispatches to ask the SDK to `resume` rather
+   * than start a fresh conversation.
+   */
+  sessionIdFor(issueId: string): string | null {
+    return this.sessionIds.get(issueId) ?? null;
+  }
+
+  setSessionId(issueId: string, sessionId: string): void {
+    this.sessionIds.set(issueId, sessionId);
+  }
+
+  clearSessionId(issueId: string): void {
+    this.sessionIds.delete(issueId);
+  }
+
   claim(issueId: string): void {
     this.states.set(issueId, 'claimed');
     this.retries.delete(issueId);
@@ -58,11 +76,13 @@ export class OrchestratorState {
   markCompleted(issueId: string): void {
     this.states.set(issueId, 'completed');
     this.retries.delete(issueId);
+    this.sessionIds.delete(issueId);
   }
 
   markFailed(issueId: string): void {
     this.states.set(issueId, 'failed');
     this.retries.delete(issueId);
+    this.sessionIds.delete(issueId);
   }
 
   scheduleRetry(issueId: string, notBefore: number): void {

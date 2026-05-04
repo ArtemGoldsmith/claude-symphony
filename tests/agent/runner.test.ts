@@ -65,6 +65,7 @@ const SUCCESS_RESULT: AgentSdkMessage = {
   num_turns: 1,
   result: 'Done.',
   total_cost_usd: 0.04,
+  session_id: 'sess_default',
   usage: {
     input_tokens: 1000,
     output_tokens: 200,
@@ -150,6 +151,19 @@ describe('buildQueryOptions', () => {
       expect(opts.allowDangerouslySkipPermissions).toBeUndefined();
     }
   });
+
+  it('passes resume when AgentRunInput.resumeSessionId is set', () => {
+    const opts = buildQueryOptions(
+      defaultInput({ resumeSessionId: 'sess_abc123' }),
+      new AbortController(),
+    );
+    expect(opts.resume).toBe('sess_abc123');
+  });
+
+  it('omits resume when AgentRunInput.resumeSessionId is unset', () => {
+    const opts = buildQueryOptions(defaultInput(), new AbortController());
+    expect(opts.resume).toBeUndefined();
+  });
 });
 
 describe('AgentRunner.run — happy path', () => {
@@ -164,6 +178,7 @@ describe('AgentRunner.run — happy path', () => {
     expect(result.exitReason).toBe('completed');
     expect(result.finalText).toBe('Done.');
     expect(result.numTurns).toBe(1);
+    expect(result.sessionId).toBe('sess_default');
     expect(result.usage).toEqual({
       inputTokens: 1000,
       outputTokens: 200,
@@ -173,6 +188,26 @@ describe('AgentRunner.run — happy path', () => {
     });
     expect(result.errorMessage).toBeNull();
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('captures session_id from the system init message even if result lacks it', async () => {
+    const queryFn: QueryFactory = vi.fn(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sess_init_xyz' };
+      yield { ...SUCCESS_RESULT, session_id: undefined } as AgentSdkMessage;
+    } as unknown as QueryFactory);
+    const runner = new AgentRunner(queryFn);
+    const result = await runner.run(defaultInput());
+    expect(result.sessionId).toBe('sess_init_xyz');
+  });
+
+  it('keeps the first session_id seen if multiple messages carry one', async () => {
+    const queryFn: QueryFactory = vi.fn(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sess_first' };
+      yield { ...SUCCESS_RESULT, session_id: 'sess_second' } as AgentSdkMessage;
+    } as unknown as QueryFactory);
+    const runner = new AgentRunner(queryFn);
+    const result = await runner.run(defaultInput());
+    expect(result.sessionId).toBe('sess_first');
   });
 
   it('forwards prompt and options to the query factory', async () => {

@@ -125,6 +125,7 @@ function buildFakes(opts: {
     finalText: 'ok',
     numTurns: 1,
     errorMessage: null,
+    sessionId: 'sess_default',
   };
   const stub: QueryFactory = async function* () {
     const fakeMsg: AgentSdkMessage = {
@@ -329,6 +330,58 @@ describe('Orchestrator.tick — Symphony continuation semantics', () => {
     expect(finalFail?.error).toMatch(/still in active state.*after 10 dispatches/);
   });
 
+  it('captures session_id on first dispatch and passes it as resumeSessionId on the continuation', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const fakes = buildFakes({ candidates });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'first-prompt {{ issue.identifier }}',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+
+    expect(fakes.agentInputs).toHaveLength(2);
+    // First dispatch has no resume id and uses the rendered template.
+    expect(fakes.agentInputs[0]?.resumeSessionId).toBeUndefined();
+    expect(fakes.agentInputs[0]?.prompt).toBe('first-prompt CHR-1');
+    // Second dispatch resumes the session captured from the first.
+    expect(fakes.agentInputs[1]?.resumeSessionId).toBe('sess_default');
+    expect(fakes.agentInputs[1]?.prompt).toMatch(/Continuing work on CHR-1/);
+    expect(fakes.agentInputs[1]?.prompt).toMatch(/dispatch attempt #2/);
+  });
+
+  it('clears the captured session_id when the issue reaches a terminal state', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const fakes = buildFakes({ candidates });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(orchestrator.state.sessionIdFor('i1')).toBe('sess_default');
+
+    fakes.linearStates.set('CHR-1', 'Done');
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(orchestrator.state.stateOf('i1')).toBe('completed');
+    expect(orchestrator.state.sessionIdFor('i1')).toBeNull();
+  });
+
   it('falls back to completed when the post-success Linear refresh fails', async () => {
     const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
     const fakes = buildFakes({ candidates, refreshError: new Error('linear unreachable') });
@@ -367,6 +420,7 @@ describe('Orchestrator.tick — failure handling', () => {
       finalText: '',
       numTurns: null,
       errorMessage: 'simulated',
+      sessionId: null,
     };
     const fakes = buildFakes({ candidates, agentResult: failResult });
 
@@ -405,6 +459,7 @@ describe('Orchestrator.tick — failure handling', () => {
       finalText: '',
       numTurns: null,
       errorMessage: 'simulated',
+      sessionId: null,
     };
     const fakes = buildFakes({ candidates, agentResult: failResult });
 
@@ -444,6 +499,7 @@ describe('Orchestrator.tick — failure handling', () => {
       finalText: '',
       numTurns: null,
       errorMessage: 'simulated',
+      sessionId: null,
     };
     const fakes = buildFakes({ candidates, agentResult: failResult });
 

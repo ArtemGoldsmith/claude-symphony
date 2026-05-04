@@ -62,6 +62,23 @@ import { OrchestratorState } from './state.js';
 
 const RETRY_DELAY_MS = 30_000;
 const MAX_FAILURE_ATTEMPTS = 2;
+
+/**
+ * Short continuation prompt for resumed sessions. The SDK rehydrates the
+ * full prior conversation from the captured session_id, so the prompt only
+ * needs to nudge the agent on what changed since: which attempt this is and
+ * what to do next.
+ */
+function buildContinuationPrompt(issue: Issue, attemptNumber: number): string {
+  return [
+    `Continuing work on ${issue.identifier}. This is dispatch attempt #${attemptNumber}.`,
+    `Linear state was checked just now and is still in an active state, so the orchestrator is asking you to keep going.`,
+    ``,
+    `If the work is actually done from your side, transition the Linear issue to the appropriate non-active state (e.g. "Human Review" or whatever the team uses) so the orchestrator stops re-dispatching.`,
+    `If you're blocked, post a single Linear comment describing the blocker and stop — do NOT silently no-op, that wastes a dispatch.`,
+    `Otherwise resume what you were doing.`,
+  ].join('\n');
+}
 /**
  * Hard cap on total dispatches per issue. Protects against runaway cost when
  * Linear state never leaves `active_states`. Hitting it marks the issue
@@ -149,14 +166,19 @@ export class Orchestrator {
 
     try {
       const ws = await this.deps.workspace.ensureWorkspace(issue);
-      const prompt = renderPrompt(this.deps.promptTemplate, {
-        issue: buildIssueView(issue),
-        attempt: null,
-      });
+      const resumeSessionId = this.state.sessionIdFor(issue.id) ?? undefined;
+      const attemptNumber = this.state.attemptCount(issue.id);
+      const prompt = resumeSessionId
+        ? buildContinuationPrompt(issue, attemptNumber)
+        : renderPrompt(this.deps.promptTemplate, {
+            issue: buildIssueView(issue),
+            attempt: null,
+          });
       const result = await this.deps.agent.run({
         workspacePath: ws.path,
         prompt,
         config: this.deps.config.claude,
+        resumeSessionId,
         onStderr: (chunk) => {
           this.emit({
             type: 'agent_stderr',
@@ -167,6 +189,10 @@ export class Orchestrator {
           });
         },
       });
+
+      if (result.sessionId !== null) {
+        this.state.setSessionId(issue.id, result.sessionId);
+      }
 
       if (result.exitReason === 'completed') {
         await this.handleSuccess(issue, result);

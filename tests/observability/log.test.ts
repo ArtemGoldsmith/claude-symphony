@@ -75,6 +75,7 @@ describe('writeOrchestratorEvent', () => {
           finalText: '',
           numTurns: 1,
           errorMessage: null,
+          sessionId: 'sess_log_test',
         },
       },
     ]);
