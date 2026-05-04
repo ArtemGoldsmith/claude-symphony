@@ -63,8 +63,14 @@ export interface OrchestratorDeps {
 
 import { OrchestratorState } from './state.js';
 
-const RETRY_DELAY_MS = 30_000;
-const MAX_FAILURE_ATTEMPTS = 2;
+/**
+ * Exponential backoff schedule for consecutive dispatch failures. Indexed by
+ * failureCount-1: the first failure waits 30 s, the second 2 min, the third
+ * 8 min, the fourth 30 min. After RETRY_DELAYS_MS.length consecutive
+ * failures the issue is marked failed — operator action required.
+ */
+const RETRY_DELAYS_MS = [30_000, 2 * 60_000, 8 * 60_000, 30 * 60_000];
+const MAX_FAILURE_ATTEMPTS = RETRY_DELAYS_MS.length + 1; // 5
 
 /**
  * Short continuation prompt for resumed sessions. The SDK rehydrates the
@@ -278,19 +284,25 @@ export class Orchestrator {
       error: reason,
     });
 
-    if (this.state.attemptCount(issue.id) < MAX_FAILURE_ATTEMPTS) {
-      const retryAt = now + RETRY_DELAY_MS;
-      this.state.scheduleRetry(issue.id, retryAt);
-      this.emit({
-        type: 'retry_scheduled',
-        at: now,
-        issueId: issue.id,
-        issueIdentifier: issue.identifier,
-        retryAt,
-      });
-    } else {
+    const failureCount = this.state.incrementFailureCount(issue.id);
+    if (failureCount >= MAX_FAILURE_ATTEMPTS) {
       this.state.markFailed(issue.id);
+      return;
     }
+
+    // Backoff index is failureCount-1 capped at the schedule's last entry.
+    // (failureCount is 1-based after the increment above.)
+    const delayIdx = Math.min(failureCount - 1, RETRY_DELAYS_MS.length - 1);
+    const delay = RETRY_DELAYS_MS[delayIdx]!;
+    const retryAt = now + delay;
+    this.state.scheduleRetry(issue.id, retryAt);
+    this.emit({
+      type: 'retry_scheduled',
+      at: now,
+      issueId: issue.id,
+      issueIdentifier: issue.identifier,
+      retryAt,
+    });
   }
 
   /**
@@ -302,6 +314,10 @@ export class Orchestrator {
    */
   private async handleSuccess(issue: Issue, result: AgentRunResult): Promise<void> {
     const now = this.deps.now?.() ?? Date.now();
+    // A successful agent run breaks any consecutive-failure streak; the
+    // backoff window resets so a later failure starts at the 30 s tier
+    // again rather than at 30 minutes.
+    this.state.resetFailureCount(issue.id);
     let refreshed: Issue | null = null;
     try {
       refreshed = await this.deps.linear.fetchIssueByIdentifier(issue.identifier);

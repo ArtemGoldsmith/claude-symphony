@@ -23,6 +23,7 @@ export class OrchestratorState {
   private readonly states = new Map<string, IssueRunState>();
   private readonly retries = new Map<string, RetryEntry>();
   private readonly attempts = new Map<string, number>();
+  private readonly failures = new Map<string, number>();
   private readonly sessionIds = new Map<string, string>();
   private readonly inflight = new Set<Promise<void>>();
 
@@ -44,6 +45,25 @@ export class OrchestratorState {
 
   attemptCount(issueId: string): number {
     return this.attempts.get(issueId) ?? 0;
+  }
+
+  /**
+   * Consecutive failure count, reset on any success (completion OR
+   * continuation). Drives exponential retry backoff so a failure interleaved
+   * with successful continuations doesn't get a 30-minute delay.
+   */
+  failureCount(issueId: string): number {
+    return this.failures.get(issueId) ?? 0;
+  }
+
+  incrementFailureCount(issueId: string): number {
+    const next = (this.failures.get(issueId) ?? 0) + 1;
+    this.failures.set(issueId, next);
+    return next;
+  }
+
+  resetFailureCount(issueId: string): void {
+    this.failures.delete(issueId);
   }
 
   /**
@@ -114,12 +134,14 @@ export class OrchestratorState {
     this.states.set(issueId, 'completed');
     this.retries.delete(issueId);
     this.sessionIds.delete(issueId);
+    this.failures.delete(issueId);
   }
 
   markFailed(issueId: string): void {
     this.states.set(issueId, 'failed');
     this.retries.delete(issueId);
     this.sessionIds.delete(issueId);
+    this.failures.delete(issueId);
   }
 
   scheduleRetry(issueId: string, notBefore: number): void {

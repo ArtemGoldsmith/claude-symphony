@@ -565,7 +565,7 @@ describe('Orchestrator.tick — failure handling', () => {
     expect(fakes.events.filter((e) => e.type === 'retry_skipped').length).toBeGreaterThan(0);
   });
 
-  it('redispatches once cooldown has elapsed and marks failed after the second failure', async () => {
+  it('uses exponential backoff and marks failed after MAX_FAILURE_ATTEMPTS consecutive failures', async () => {
     const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
     const failResult: AgentRunResult = {
       exitReason: 'error',
@@ -595,15 +595,97 @@ describe('Orchestrator.tick — failure handling', () => {
       now: () => nowMs,
     });
 
+    // 5 consecutive failures expected. Backoff schedule: 30s, 2m, 8m, 30m,
+    // then markFailed without scheduling a 5th retry.
+    const expectedDelaysMs = [30_000, 2 * 60_000, 8 * 60_000, 30 * 60_000];
+
+    for (let i = 0; i < 4; i += 1) {
+      await orchestrator.tick();
+      await orchestrator.state.drain();
+      const last = fakes.events.filter((e) => e.type === 'retry_scheduled').pop();
+      expect(last).toBeDefined();
+      expect(last!.retryAt! - nowMs).toBe(expectedDelaysMs[i]);
+      nowMs = last!.retryAt!; // jump past cooldown
+    }
+
+    // The 5th tick is the final dispatch; after it fails we should be in
+    // 'failed' rather than retry_pending.
     await orchestrator.tick();
     await orchestrator.state.drain();
-
-    nowMs += 31_000; // past the 30s cooldown
-    await orchestrator.tick();
-    await orchestrator.state.drain();
-
-    expect(orchestrator.state.attemptCount('i1')).toBe(2);
     expect(orchestrator.state.stateOf('i1')).toBe('failed');
+    expect(orchestrator.state.attemptCount('i1')).toBe(5);
+  });
+
+  it('resets the failure backoff on a successful continuation', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const fakes = buildFakes({ candidates });
+    let runCount = 0;
+    fakes.agent.run = vi.fn(async (_input: AgentRunInput): Promise<AgentRunResult> => {
+      runCount += 1;
+      // Fail once, then succeed (still active → continuation), then fail again.
+      if (runCount === 1 || runCount === 3) {
+        return {
+          exitReason: 'error',
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            totalCostUsd: null,
+          },
+          durationMs: 5,
+          finalText: '',
+          numTurns: null,
+          errorMessage: 'sim',
+          sessionId: null,
+        };
+      }
+      return {
+        exitReason: 'completed',
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          totalCostUsd: 0,
+        },
+        durationMs: 5,
+        finalText: '',
+        numTurns: 1,
+        errorMessage: null,
+        sessionId: `s-${runCount}`,
+      };
+    });
+
+    let nowMs = 1_000_000;
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+      now: () => nowMs,
+    });
+
+    // Tick 1 — failure 1, retry scheduled with 30s delay.
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(orchestrator.state.failureCount('i1')).toBe(1);
+    nowMs += 31_000;
+
+    // Tick 2 — success-still-active, continuation. failureCount should reset.
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(orchestrator.state.failureCount('i1')).toBe(0);
+
+    // Tick 3 — failure 2 in lifetime, but 1st in this streak: should use
+    // the 30s delay again, NOT the 2-minute delay.
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    const lastRetry = fakes.events.filter((e) => e.type === 'retry_scheduled').pop();
+    expect(lastRetry).toBeDefined();
+    expect(lastRetry!.retryAt! - nowMs).toBe(30_000);
   });
 
   it('treats a workspace ensure failure as a dispatch failure', async () => {
