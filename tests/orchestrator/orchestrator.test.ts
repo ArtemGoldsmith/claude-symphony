@@ -94,11 +94,28 @@ function buildFakes(opts: {
     (opts.candidates ?? []).map((c) => [c.identifier, c.state]),
   );
 
+  // Mirror the real Linear adapter's behaviour: fetchActiveCandidates only
+  // returns issues whose CURRENT linearStates entry is NOT terminal. The
+  // default terminal set matches our config defaults so tests don't have
+  // to thread state-set wiring.
+  const TERMINAL_FOR_FAKE = new Set([
+    'Done',
+    'Cancelled',
+    'Canceled',
+    'Closed',
+    'Duplicate',
+  ]);
+
   const linear: LinearGateway = {
     fetchActiveCandidates: vi.fn(async () => {
       fetchCalls += 1;
       if (opts.fetchError) throw opts.fetchError;
-      return opts.candidates ?? [];
+      return (opts.candidates ?? [])
+        .filter((c) => {
+          const liveState = linearStates.get(c.identifier);
+          return liveState !== undefined && !TERMINAL_FOR_FAKE.has(liveState);
+        })
+        .map((c) => ({ ...c, state: linearStates.get(c.identifier)! }));
     }),
     fetchIssueByIdentifier: vi.fn(async (identifier: string) => {
       if (opts.refreshError) throw opts.refreshError;
@@ -293,6 +310,31 @@ describe('Orchestrator.tick — Symphony continuation semantics', () => {
   it('marks completed once the agent moves the issue to a terminal state on a later attempt', async () => {
     const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
     const fakes = buildFakes({ candidates });
+    let runCount = 0;
+    // First run: agent succeeds but leaves state Todo → continuation.
+    // Second run: agent finally moves it to Done before returning, and the
+    // post-success Linear refresh sees terminal → completed.
+    fakes.agent.run = vi.fn(async (): Promise<AgentRunResult> => {
+      runCount += 1;
+      if (runCount === 2) {
+        fakes.linearStates.set('CHR-1', 'Done');
+      }
+      return {
+        exitReason: 'completed',
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          totalCostUsd: 0,
+        },
+        durationMs: 1,
+        finalText: 'ok',
+        numTurns: 1,
+        errorMessage: null,
+        sessionId: `s-${runCount}`,
+      };
+    });
 
     const orchestrator = new Orchestrator({
       linear: fakes.linear,
@@ -307,10 +349,6 @@ describe('Orchestrator.tick — Symphony continuation semantics', () => {
     await orchestrator.state.drain();
     expect(orchestrator.state.stateOf('i1')).toBe('idle');
 
-    // Second attempt: caller flips Linear state mid-run via the test hook.
-    fakes.linearStates.set('CHR-1', 'Done');
-    // The agent fn doesn't override after each call here; we just preset
-    // the new state so the post-success refresh observes it.
     await orchestrator.tick();
     await orchestrator.state.drain();
     expect(orchestrator.state.stateOf('i1')).toBe('completed');
@@ -453,6 +491,28 @@ describe('Orchestrator.tick — Symphony continuation semantics', () => {
   it('clears the captured session_id when the issue reaches a terminal state', async () => {
     const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
     const fakes = buildFakes({ candidates });
+    let runCount = 0;
+    fakes.agent.run = vi.fn(async (): Promise<AgentRunResult> => {
+      runCount += 1;
+      if (runCount === 2) {
+        fakes.linearStates.set('CHR-1', 'Done');
+      }
+      return {
+        exitReason: 'completed',
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          totalCostUsd: 0,
+        },
+        durationMs: 1,
+        finalText: 'ok',
+        numTurns: 1,
+        errorMessage: null,
+        sessionId: `s-${runCount}`,
+      };
+    });
 
     const orchestrator = new Orchestrator({
       linear: fakes.linear,
@@ -465,9 +525,8 @@ describe('Orchestrator.tick — Symphony continuation semantics', () => {
 
     await orchestrator.tick();
     await orchestrator.state.drain();
-    expect(orchestrator.state.sessionIdFor('i1')).toBe('sess_default');
+    expect(orchestrator.state.sessionIdFor('i1')).toBe('s-1');
 
-    fakes.linearStates.set('CHR-1', 'Done');
     await orchestrator.tick();
     await orchestrator.state.drain();
     expect(orchestrator.state.stateOf('i1')).toBe('completed');
@@ -1031,6 +1090,87 @@ describe('Orchestrator lifecycle hooks (before_run / after_run)', () => {
     await orchestrator.tick();
     await orchestrator.state.drain();
     expect(await fs.stat(afterMarker).then((s) => s.isFile())).toBe(true);
+  });
+});
+
+describe('Orchestrator reactivation (rework workflow)', () => {
+  it('re-dispatches a previously-completed issue when Linear puts it back in active', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const fakes = buildFakes({ candidates, postSuccessLinearState: 'Done' });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    // Tick 1: dispatch + agent moves to Done → completed.
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(orchestrator.state.stateOf('i1')).toBe('completed');
+
+    // Operator reviews PR, finds problems, moves Linear back to Todo.
+    fakes.linearStates.set('CHR-1', 'Todo');
+
+    // Tick 2: orchestrator sees the active candidate but our state still
+    // says completed. Reactivation reset → fresh dispatch.
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+
+    expect(fakes.workspaceCalls).toEqual(['CHR-1', 'CHR-1']);
+    const reactivation = fakes.events.find((e) => e.type === 'reactivation_detected');
+    expect(reactivation?.issueIdentifier).toBe('CHR-1');
+  });
+
+  it('also reactivates a previously-failed issue (operator-forced retry)', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const failResult: AgentRunResult = {
+      exitReason: 'error',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        totalCostUsd: null,
+      },
+      durationMs: 5,
+      finalText: '',
+      numTurns: null,
+      errorMessage: 'sim',
+      sessionId: null,
+    };
+    const fakes = buildFakes({ candidates, agentResult: failResult });
+
+    let nowMs = 1_000_000;
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+      now: () => nowMs,
+    });
+
+    // Burn through 5 failures to land in 'failed'.
+    for (let i = 0; i < 5; i += 1) {
+      await orchestrator.tick();
+      await orchestrator.state.drain();
+      const last = fakes.events.filter((e) => e.type === 'retry_scheduled').pop();
+      if (last?.retryAt) nowMs = last.retryAt;
+    }
+    expect(orchestrator.state.stateOf('i1')).toBe('failed');
+    nowMs += 60 * 60 * 1000;
+
+    // Operator forces retry by leaving state in Todo.
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+    expect(orchestrator.state.failureCount('i1')).toBe(1); // freshly counted (not 5)
+    const reactivation = fakes.events.find((e) => e.type === 'reactivation_detected');
+    expect(reactivation).toBeDefined();
   });
 });
 

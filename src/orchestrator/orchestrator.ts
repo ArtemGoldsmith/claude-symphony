@@ -39,6 +39,7 @@ export interface OrchestratorEvent {
     | 'startup_recovery'
     | 'workspace_cleaned'
     | 'config_reloaded'
+    | 'reactivation_detected'
     | 'agent_stderr';
   at: number;
   issueId?: string;
@@ -368,8 +369,25 @@ export class Orchestrator {
     for (const issue of dispatchable) {
       if (this.state.busyCount() >= cap) break;
       if (this.state.isBusy(issue.id)) continue;
-      if (this.state.stateOf(issue.id) === 'completed') continue;
-      if (this.state.stateOf(issue.id) === 'failed') continue;
+      // Reactivation: a previously-terminal issue is back in active_states
+      // (operator moved Human Review → Rework, etc). The persisted
+      // sessionId was already cleared on completion/failure, so this
+      // dispatch starts a fresh session — agent re-renders the full
+      // prompt, sees the current ticket including new comments, and
+      // works from there. failureCount resets so the new run gets a full
+      // fresh backoff window.
+      const persisted = this.state.stateOf(issue.id);
+      if (persisted === 'completed' || persisted === 'failed') {
+        this.state.markIdleForContinuation(issue.id);
+        this.state.resetFailureCount(issue.id);
+        this.emit({
+          type: 'reactivation_detected',
+          at: now,
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+          linearStateAfterRun: issue.state,
+        });
+      }
       if (this.state.isInRetryCooldown(issue.id, now)) {
         this.emit({
           type: 'retry_skipped',

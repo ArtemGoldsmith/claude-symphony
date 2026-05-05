@@ -130,6 +130,13 @@ export function writeOrchestratorEvent(logger: Logger, event: OrchestratorEvent)
       logger.info(base, 'WORKFLOW.md hot-reloaded; new dispatches will use the updated config');
       break;
 
+    case 'reactivation_detected':
+      logger.info(
+        { ...base, linearStateAfterRun: event.linearStateAfterRun },
+        `${event.issueIdentifier} returned to active state (${event.linearStateAfterRun}); resetting for fresh dispatch`,
+      );
+      break;
+
     case 'workspace_cleaned':
       if (event.error) {
         logger.warn(
