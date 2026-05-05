@@ -196,6 +196,38 @@ export class Orchestrator {
   }
 
   /**
+   * Phase 3 P3: read-only snapshot for the status surface. Includes the
+   * persistable state plus live config summary and `running` flag.
+   */
+  snapshot(): {
+    running: boolean;
+    config: { project_slug: string; active_states: string[]; terminal_states: string[]; max_concurrent_agents: number; polling_interval_ms: number };
+    state: import('./state.js').SerializedOrchestratorState;
+  } {
+    return {
+      running: this.running,
+      config: {
+        project_slug: this.liveConfig.tracker.project_slug,
+        active_states: [...this.liveConfig.tracker.active_states],
+        terminal_states: [...this.liveConfig.tracker.terminal_states],
+        max_concurrent_agents: this.liveConfig.agent.max_concurrent_agents,
+        polling_interval_ms: this.liveConfig.polling.interval_ms,
+      },
+      state: this.state.serialize(),
+    };
+  }
+
+  /**
+   * Phase 3 P3: trigger an immediate poll-and-dispatch cycle, regardless
+   * of the polling interval. Used by `POST /api/v1/refresh`. Returns once
+   * the tick completes; in-flight dispatches kicked off during the tick
+   * keep running asynchronously.
+   */
+  async refreshNow(): Promise<void> {
+    await this.tick();
+  }
+
+  /**
    * Replace in-memory state with a previously-saved snapshot. Called by the
    * CLI on boot when a state file is present. Hydration does NOT fire
    * onStateChanged; the caller is expected to take it from there.

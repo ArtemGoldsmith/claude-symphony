@@ -19,6 +19,7 @@ import { AgentRunner, createSdkQueryFactory, type QueryFactory } from '../agent/
 import { Orchestrator } from '../orchestrator/orchestrator.js';
 import { loadStateFromDisk, saveStateToDisk } from '../orchestrator/persistence.js';
 import { createLogger, writeOrchestratorEvent } from '../observability/log.js';
+import { startStatusServer, type StatusServer } from '../observability/http-server.js';
 
 export class CliError extends Error {
   constructor(
@@ -197,6 +198,23 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
 
   await orchestrator.start();
 
+  // Phase 3 P3: status surface. Starts only when --port was set.
+  let statusServer: StatusServer | null = null;
+  if (args.port !== null) {
+    try {
+      statusServer = await startStatusServer({ port: args.port, orchestrator });
+      logger.info(
+        { kind: 'status_surface', port: statusServer.port },
+        `status dashboard at http://127.0.0.1:${statusServer.port}/`,
+      );
+    } catch (err) {
+      logger.warn(
+        { kind: 'status_surface', error: (err as Error).message },
+        'failed to start status server; orchestrator continues without it',
+      );
+    }
+  }
+
   // Phase 3 P4: hot reload of WORKFLOW.md. Watch the file; on change,
   // re-load + validate + resolve + preflight + swap config behind the
   // orchestrator. A reload that fails any stage is logged and the daemon
@@ -239,6 +257,13 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
         reloadDebounce = null;
       }
       watcher.close();
+      if (statusServer !== null) {
+        try {
+          await statusServer.close();
+        } catch (err) {
+          logger.warn({ kind: 'status_surface', error: (err as Error).message }, 'status server close failed');
+        }
+      }
       await orchestrator.stop();
       logger.info('claude-symphony stopped');
     },
