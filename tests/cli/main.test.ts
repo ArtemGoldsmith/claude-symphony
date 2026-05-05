@@ -143,6 +143,35 @@ prompt body for {{ issue.identifier }}
     expect(fs.existsSync(path.join(logsRoot, 'symphony.log'))).toBe(true);
   });
 
+  it('fails fast if the Linear access probe throws (Phase 3 P9)', async () => {
+    const fakeQuery = vi.fn(async function* () {
+      yield { type: 'result' as const, subtype: 'success' as const };
+    });
+    const linearClientFactory = vi.fn(() => {
+      const issues = vi.fn(async () => {
+        throw new Error('401 unauthorized');
+      });
+      return { issues } as unknown as InstanceType<
+        typeof import('@linear/sdk').LinearClient
+      >;
+    });
+
+    const prevApiKey = process.env.LINEAR_API_KEY;
+    process.env.LINEAR_API_KEY = 'lin_bad';
+
+    try {
+      await expect(
+        runCli([workflowPath, '--logs-root', logsRoot], {
+          queryFactory: fakeQuery as never,
+          linearClientFactory,
+        }),
+      ).rejects.toThrow(/Linear connectivity check failed/);
+    } finally {
+      if (prevApiKey === undefined) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = prevApiKey;
+    }
+  });
+
   it('surfaces preflight failures as thrown errors before starting the orchestrator', async () => {
     fs.writeFileSync(
       workflowPath,

@@ -173,6 +173,22 @@ describe('createSymphonyLinearMcpServer — server registration', () => {
       ].sort(),
     );
   });
+
+  it('honours disabledTools to suppress specific tool registrations (Phase 3 P10)', () => {
+    const { writes } = buildFakeWrites();
+    const server = createSymphonyLinearMcpServer({
+      currentIssue: makeIssue(),
+      writes,
+      projectSlug: 'chronicle-test',
+      disabledTools: ['transition_state', 'post_comment'],
+    });
+    const names = getTools(server)
+      .map((t) => t.name)
+      .sort();
+    expect(names).toEqual(
+      ['attach_pr_url', 'create_or_update_workpad', 'get_current_issue', 'get_workpad'].sort(),
+    );
+  });
 });
 
 describe('symphony_linear tool — get_current_issue', () => {

@@ -330,6 +330,7 @@ export class Orchestrator {
           currentIssue: issue,
           writes: this.deps.linearWrites,
           projectSlug: this.deps.config.tracker.project_slug,
+          disabledTools: this.deps.config.claude.symphony_linear_disabled_tools,
         });
       }
       const result = await this.deps.agent.run({

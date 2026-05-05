@@ -20,6 +20,7 @@ function defaultClaudeConfig(overrides: Partial<ClaudeConfig> = {}): ClaudeConfi
     stall_timeout_ms: 30_000,
     max_turns: 1,
     enable_safety_hooks: true,
+    symphony_linear_disabled_tools: [],
     ...overrides,
   };
 }

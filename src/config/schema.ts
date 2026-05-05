@@ -94,6 +94,15 @@ export const ClaudeConfigSchema = z
     // bash" policy. Default true; turn off only if you have a stronger
     // OS-level sandbox in place. See src/agent/safety-hooks.ts.
     enable_safety_hooks: z.boolean().default(true),
+    /**
+     * Names of in-process symphony_linear tools to NOT register for this
+     * workflow. Use to dial down to read-only (disable transition_state,
+     * post_comment, etc.) when an operator wants to manage Linear state
+     * manually. Tool names: get_current_issue, get_workpad,
+     * create_or_update_workpad, transition_state, attach_pr_url,
+     * post_comment.
+     */
+    symphony_linear_disabled_tools: z.array(z.string()).default([]),
   })
   .default({});
 export type ClaudeConfig = z.infer<typeof ClaudeConfigSchema>;

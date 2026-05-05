@@ -145,6 +145,25 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
   const queryFactory = deps.queryFactory ?? (await createSdkQueryFactory());
   const agentRunner = new AgentRunner(queryFactory);
 
+  // Linear connectivity probe (Phase 3 P9). Catches the most common boot
+  // failures before the daemon claims to be running: bad API key, bad
+  // project slug, network. Write-scope verification is deferred to first
+  // symphony_linear call — Linear has no scope-introspection endpoint.
+  try {
+    await linearGateway.fetchActiveCandidates(
+      resolved.tracker.project_slug,
+      resolved.tracker.active_states,
+    );
+    logger.info({ kind: 'preflight' }, 'Linear read access OK');
+  } catch (err) {
+    const message = (err as Error).message;
+    logger.error({ kind: 'preflight', error: message }, 'Linear access probe failed');
+    throw new CliError(
+      `Linear connectivity check failed at boot: ${message}. ` +
+        `Check LINEAR_API_KEY validity and that tracker.project_slug "${resolved.tracker.project_slug}" exists.`,
+    );
+  }
+
   const orchestrator = new Orchestrator({
     linear: linearGateway,
     linearWrites: linearWriteGateway,

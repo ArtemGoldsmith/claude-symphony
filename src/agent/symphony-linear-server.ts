@@ -40,7 +40,24 @@ export interface SymphonyLinearServerOptions {
    * scoped issue as authoritative.
    */
   projectSlug: string;
+  /**
+   * Tool names from the canonical 6-tool surface that should NOT be
+   * registered. Use to dial down to read-only or skip transition_state
+   * when state management lives elsewhere. Names match those in
+   * `SYMPHONY_LINEAR_TOOL_NAMES` below.
+   */
+  disabledTools?: ReadonlyArray<string>;
 }
+
+/** Canonical names of all tools the symphony_linear server can expose. */
+export const SYMPHONY_LINEAR_TOOL_NAMES = [
+  'get_current_issue',
+  'get_workpad',
+  'create_or_update_workpad',
+  'transition_state',
+  'attach_pr_url',
+  'post_comment',
+] as const;
 
 /**
  * Build the in-process symphony_linear MCP server. The returned object is
@@ -72,10 +89,9 @@ export function createSymphonyLinearMcpServer(
     return null;
   };
 
-  return createSdkMcpServer({
-    name: 'symphony_linear',
-    version: '0.1.0',
-    tools: [
+  const disabled = new Set(options.disabledTools ?? []);
+
+  const allTools = [
       // 1. get_current_issue
       tool(
         'get_current_issue',
@@ -229,6 +245,13 @@ export function createSymphonyLinearMcpServer(
           }
         },
       ),
-    ],
+    ];
+
+  return createSdkMcpServer({
+    name: 'symphony_linear',
+    version: '0.1.0',
+    tools: allTools.filter(
+      (t) => !disabled.has((t as { name?: string }).name ?? ''),
+    ),
   });
 }
