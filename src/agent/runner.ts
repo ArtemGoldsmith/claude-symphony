@@ -88,6 +88,7 @@ export type QueryFactory = (params: {
 
 export type ExitReason =
   | 'completed'
+  | 'incomplete_turns'
   | 'error'
   | 'turn_timeout'
   | 'stall_timeout'
@@ -264,7 +265,14 @@ export class AgentRunner {
 
     let finalText = '';
     let numTurns: number | null = null;
-    let usage = ZERO_USAGE;
+    /**
+     * Accumulator for per-assistant-message usage so that a run aborted
+     * mid-stream still reports the tokens it actually burned. Replaced
+     * wholesale by the final `result` message's cumulative usage when one
+     * arrives (that's authoritative); otherwise the orchestrator sees the
+     * partial total instead of zeros — see Phase 3 P2.
+     */
+    let usage: AggregatedUsage = { ...ZERO_USAGE };
     let sessionId: string | null = null;
 
     try {
@@ -286,12 +294,26 @@ export class AgentRunner {
           }
         }
 
+        // Accumulate per-turn usage from assistant messages so that an
+        // aborted run still reports the tokens it actually burned.
+        // Result messages overwrite this with the authoritative cumulative
+        // usage just below.
+        accumulateAssistantUsage(usage, message);
+
         if (isResultMessage(message)) {
           finalText = message.result ?? '';
           numTurns = message.num_turns ?? null;
           usage = aggregateUsage(message);
           if (message.subtype === 'success') {
             if (exitReason === null) exitReason = 'completed';
+          } else if (message.subtype === 'error_max_turns') {
+            // The agent ran out of SDK-internal turns mid-work. NOT a
+            // hard failure — semantically equivalent to "succeeded but
+            // the issue may still be active." The orchestrator routes
+            // this through handleSuccess, which refreshes Linear and
+            // decides between completion and continuation. Saves the
+            // 30-second failure cooldown that we'd otherwise burn.
+            if (exitReason === null) exitReason = 'incomplete_turns';
           } else {
             if (exitReason === null) {
               exitReason = 'error';
@@ -334,6 +356,29 @@ export class AgentRunner {
 
 function isResultMessage(message: AgentSdkMessage): message is SdkResultMessage {
   return message.type === 'result';
+}
+
+/**
+ * Add the per-turn usage carried by an assistant message into `target`.
+ * BetaMessage.usage shape: { input_tokens, output_tokens,
+ * cache_creation_input_tokens?, cache_read_input_tokens? }. Anything we
+ * can't parse is silently ignored; this is best-effort partial telemetry,
+ * not a billing source.
+ */
+function accumulateAssistantUsage(target: AggregatedUsage, message: AgentSdkMessage): void {
+  if (message.type !== 'assistant') return;
+  const inner = (message as { message?: { usage?: unknown } }).message;
+  if (!inner || typeof inner !== 'object') return;
+  const usage = (inner as { usage?: Record<string, unknown> }).usage;
+  if (!usage || typeof usage !== 'object') return;
+  const inTok = Number(usage.input_tokens);
+  const outTok = Number(usage.output_tokens);
+  const cacheCreate = Number(usage.cache_creation_input_tokens ?? 0);
+  const cacheRead = Number(usage.cache_read_input_tokens ?? 0);
+  if (Number.isFinite(inTok)) target.inputTokens += inTok;
+  if (Number.isFinite(outTok)) target.outputTokens += outTok;
+  if (Number.isFinite(cacheCreate)) target.cacheCreationInputTokens += cacheCreate;
+  if (Number.isFinite(cacheRead)) target.cacheReadInputTokens += cacheRead;
 }
 
 function aggregateUsage(message: SdkResultMessage): AggregatedUsage {

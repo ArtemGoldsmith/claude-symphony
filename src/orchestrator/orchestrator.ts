@@ -354,7 +354,11 @@ export class Orchestrator {
         this.state.setSessionId(issue.id, result.sessionId);
       }
 
-      if (result.exitReason === 'completed') {
+      if (result.exitReason === 'completed' || result.exitReason === 'incomplete_turns') {
+        // 'incomplete_turns' (SDK error_max_turns) goes through the success
+        // path: Linear refresh decides terminal-vs-continuation. Cheaper
+        // than treating it as failure with 30s cooldown — see SPEC-claude.md
+        // Phase 3 P1.
         await this.handleSuccess(issue, result);
       } else if (result.exitReason === 'aborted_externally') {
         // Reconcile has already aborted because Linear moved to a terminal

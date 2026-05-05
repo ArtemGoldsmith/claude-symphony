@@ -5,7 +5,24 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { OrchestratorEvent } from '../../src/orchestrator/orchestrator.js';
-import { createLogger, writeOrchestratorEvent } from '../../src/observability/log.js';
+import { createLogger, truncateMiddle, writeOrchestratorEvent } from '../../src/observability/log.js';
+
+describe('truncateMiddle (Phase 3 P8)', () => {
+  it('passes strings under the cap through unchanged', () => {
+    expect(truncateMiddle('hello', 100)).toBe('hello');
+  });
+
+  it('keeps head and tail with a marker for oversized strings', () => {
+    const head = 'A'.repeat(100);
+    const tail = 'B'.repeat(100);
+    const result = truncateMiddle(head + 'X'.repeat(1000) + tail, 250);
+    expect(result.startsWith('A')).toBe(true);
+    expect(result.endsWith('B')).toBe(true);
+    expect(result).toMatch(/truncated \d+ bytes/);
+    // 4 KB / 8 KB caps in production — but the function handles 250 too.
+    expect(result.length).toBeLessThan(1200);
+  });
+});
 
 describe('createLogger', () => {
   let logsRoot: string;
@@ -101,6 +118,37 @@ describe('writeOrchestratorEvent', () => {
     const entry = captured[0] as { level: string; record: { retryAt: number } };
     expect(entry.level).toBe('warn');
     expect(entry.record.retryAt).toBe(9999);
+  });
+
+  it('truncates oversize agent_stderr chunks (Phase 3 P8)', () => {
+    const huge = 'X'.repeat(20 * 1024); // 20 KB, well over the 8 KB cap
+    const captured = captureLogs([
+      {
+        type: 'agent_stderr',
+        at: 1,
+        issueId: 'i1',
+        issueIdentifier: 'CHR-1',
+        stderrChunk: huge,
+      },
+    ]);
+    const entry = captured[0] as { record: { stderr: string } };
+    expect(entry.record.stderr.length).toBeLessThan(huge.length);
+    expect(entry.record.stderr).toMatch(/truncated \d+ bytes/);
+  });
+
+  it('does not touch agent_stderr chunks under the cap', () => {
+    const small = 'short stderr line';
+    const captured = captureLogs([
+      {
+        type: 'agent_stderr',
+        at: 1,
+        issueId: 'i1',
+        issueIdentifier: 'CHR-1',
+        stderrChunk: small,
+      },
+    ]);
+    const entry = captured[0] as { record: { stderr: string } };
+    expect(entry.record.stderr).toBe(small);
   });
 
   it('logs tick_* and retry_skipped at debug', () => {

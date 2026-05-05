@@ -226,14 +226,25 @@ describe('AgentRunner.run — happy path', () => {
 });
 
 describe('AgentRunner.run — failure paths', () => {
-  it('maps result.subtype="error_max_turns" to exitReason=error', async () => {
+  it('maps result.subtype="error_max_turns" to exitReason=incomplete_turns (Phase 3 P1)', async () => {
     const queryFn = vi.fn(() =>
       yieldMessages([{ ...SUCCESS_RESULT, subtype: 'error_max_turns' }]),
     );
     const runner = new AgentRunner(queryFn as unknown as QueryFactory);
     const result = await runner.run(defaultInput());
+    expect(result.exitReason).toBe('incomplete_turns');
+    // No errorMessage on incomplete_turns — it's not a failure mode.
+    expect(result.errorMessage).toBeNull();
+  });
+
+  it('maps unknown error subtypes to exitReason=error', async () => {
+    const queryFn = vi.fn(() =>
+      yieldMessages([{ ...SUCCESS_RESULT, subtype: 'error_during_execution' }]),
+    );
+    const runner = new AgentRunner(queryFn as unknown as QueryFactory);
+    const result = await runner.run(defaultInput());
     expect(result.exitReason).toBe('error');
-    expect(result.errorMessage).toMatch(/error_max_turns/);
+    expect(result.errorMessage).toMatch(/error_during_execution/);
   });
 
   it('returns error when stream ends without a result terminator', async () => {
@@ -299,6 +310,59 @@ describe('AgentRunner.run — timeouts and abort', () => {
     );
     expect(result.exitReason).toBe('stall_timeout');
     expect(result.errorMessage).toMatch(/stall_timeout_ms=50/);
+  });
+
+  it('reports accumulated assistant-message usage when aborted before result (Phase 3 P2)', async () => {
+    const queryFn: QueryFactory = (params) => {
+      const signal = params.options?.abortController?.signal;
+      const stream: Array<{ delayMs: number; message?: AgentSdkMessage }> = [
+        {
+          delayMs: 5,
+          message: {
+            type: 'assistant',
+            message: {
+              usage: {
+                input_tokens: 1000,
+                output_tokens: 200,
+                cache_creation_input_tokens: 500,
+                cache_read_input_tokens: 0,
+              },
+            },
+          } as AgentSdkMessage,
+        },
+        {
+          delayMs: 5,
+          message: {
+            type: 'assistant',
+            message: {
+              usage: {
+                input_tokens: 200,
+                output_tokens: 50,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 100,
+              },
+            },
+          } as AgentSdkMessage,
+        },
+        // Never reached — the runner aborts via stall_timeout below.
+        { delayMs: 1000, message: SUCCESS_RESULT },
+      ];
+      return yieldDelayed(stream, signal);
+    };
+    const runner = new AgentRunner(queryFn);
+    const result = await runner.run(
+      defaultInput({
+        config: defaultClaudeConfig({
+          turn_timeout_ms: 60_000,
+          stall_timeout_ms: 50,
+        }),
+      }),
+    );
+    expect(result.exitReason).toBe('stall_timeout');
+    expect(result.usage.inputTokens).toBe(1200);
+    expect(result.usage.outputTokens).toBe(250);
+    expect(result.usage.cacheCreationInputTokens).toBe(500);
+    expect(result.usage.cacheReadInputTokens).toBe(100);
   });
 
   it('respects an external abort signal', async () => {

@@ -15,6 +15,27 @@ import pino, { type Logger } from 'pino';
 
 import type { OrchestratorEvent } from '../orchestrator/orchestrator.js';
 
+/** Per-event cap on stderr text written to the JSONL log (Phase 3 P8). */
+const STDERR_MAX_BYTES = 8 * 1024;
+
+/**
+ * Truncate `s` to roughly `max` bytes by keeping the head and the tail and
+ * dropping the middle, with an inline marker so log readers know how much
+ * was lost. Pure function; exported for tests.
+ */
+export function truncateMiddle(s: string, max: number): string {
+  if (Buffer.byteLength(s, 'utf8') <= max) return s;
+  const headEnd = Math.max(0, Math.floor(max / 2) - 60);
+  const tailStart = Math.max(headEnd, s.length - (max - headEnd - 80));
+  const head = s.slice(0, headEnd);
+  const tail = s.slice(tailStart);
+  const droppedBytes =
+    Buffer.byteLength(s, 'utf8') -
+    Buffer.byteLength(head, 'utf8') -
+    Buffer.byteLength(tail, 'utf8');
+  return `${head}\n... [truncated ${droppedBytes} bytes] ...\n${tail}`;
+}
+
 export interface CreateLoggerOptions {
   logsRoot: string;
   /** Filename within logsRoot. Default: `symphony.log`. */
@@ -139,7 +160,10 @@ export function writeOrchestratorEvent(logger: Logger, event: OrchestratorEvent)
 
     case 'agent_stderr':
       logger.warn(
-        { ...base, stderr: (event.stderrChunk ?? '').trimEnd() },
+        {
+          ...base,
+          stderr: truncateMiddle((event.stderrChunk ?? '').trimEnd(), STDERR_MAX_BYTES),
+        },
         `agent stderr (${event.issueIdentifier})`,
       );
       break;

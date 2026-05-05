@@ -474,6 +474,47 @@ describe('Orchestrator.tick — Symphony continuation semantics', () => {
     expect(orchestrator.state.sessionIdFor('i1')).toBeNull();
   });
 
+  it('routes incomplete_turns (error_max_turns) through the success path, not failure (Phase 3 P1)', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const incompleteResult: AgentRunResult = {
+      exitReason: 'incomplete_turns',
+      usage: {
+        inputTokens: 100,
+        outputTokens: 100,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        totalCostUsd: 0.05,
+      },
+      durationMs: 60_000,
+      finalText: 'partial',
+      numTurns: 20,
+      errorMessage: null,
+      sessionId: 'sess_partial',
+    };
+    const fakes = buildFakes({ candidates, agentResult: incompleteResult });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+
+    // Linear state stayed Todo (the agent didn't transition). incomplete_turns
+    // → handleSuccess → still active → continuation_scheduled, NOT a failure.
+    expect(orchestrator.state.stateOf('i1')).toBe('idle');
+    expect(orchestrator.state.failureCount('i1')).toBe(0);
+    const types = fakes.events.map((e) => e.type);
+    expect(types).toContain('continuation_scheduled');
+    expect(types).not.toContain('dispatch_failed');
+    expect(types).not.toContain('retry_scheduled');
+  });
+
   it('falls back to completed when the post-success Linear refresh fails', async () => {
     const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
     const fakes = buildFakes({ candidates, refreshError: new Error('linear unreachable') });
