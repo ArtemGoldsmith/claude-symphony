@@ -126,6 +126,10 @@ export function writeOrchestratorEvent(logger: Logger, event: OrchestratorEvent)
       );
       break;
 
+    case 'config_reloaded':
+      logger.info(base, 'WORKFLOW.md hot-reloaded; new dispatches will use the updated config');
+      break;
+
     case 'workspace_cleaned':
       if (event.error) {
         logger.warn(

@@ -38,6 +38,7 @@ export interface OrchestratorEvent {
     | 'reconcile_aborted'
     | 'startup_recovery'
     | 'workspace_cleaned'
+    | 'config_reloaded'
     | 'agent_stderr';
   at: number;
   issueId?: string;
@@ -164,12 +165,34 @@ export class Orchestrator {
   private running = false;
   private nextTickTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Live config — replaceable via setConfig (Phase 3 P4 hot reload). */
+  private liveConfig: ResolvedWorkflowConfig;
+  /** Live prompt template — replaceable via setConfig. */
+  private livePromptTemplate: string;
+
   constructor(private readonly deps: OrchestratorDeps) {
+    this.liveConfig = deps.config;
+    this.livePromptTemplate = deps.promptTemplate;
     if (deps.onStateChanged) {
       this.state.onChanged = () => {
         deps.onStateChanged!(this.state.serialize());
       };
     }
+  }
+
+  /**
+   * Phase 3 P4: replace the live config and prompt template without
+   * restarting the daemon. New dispatches use the new values; in-flight
+   * dispatches are NOT affected (they finish under the prior config).
+   * Polling interval is also picked up — applied on the next reschedule.
+   */
+  setConfig(config: ResolvedWorkflowConfig, promptTemplate: string): void {
+    this.liveConfig = config;
+    this.livePromptTemplate = promptTemplate;
+    this.emit({
+      type: 'config_reloaded',
+      at: this.deps.now?.() ?? Date.now(),
+    });
   }
 
   /**
@@ -201,7 +224,7 @@ export class Orchestrator {
    * operator inspection; auto-cleanup is also Phase 3.
    */
   private async recoverFromDisk(): Promise<void> {
-    const root = path.resolve(this.deps.config.workspace.root);
+    const root = path.resolve(this.liveConfig.workspace.root);
     let entries: ReadonlyArray<{ name: string; isDirectory: () => boolean }>;
     try {
       entries = await fs.readdir(root, { withFileTypes: true });
@@ -231,7 +254,7 @@ export class Orchestrator {
    */
   private async cleanupTerminalWorktrees(identifiers: string[]): Promise<void> {
     if (identifiers.length === 0) return;
-    const terminal = new Set(this.deps.config.tracker.terminal_states);
+    const terminal = new Set(this.liveConfig.tracker.terminal_states);
     for (const identifier of identifiers) {
       let issue;
       try {
@@ -284,8 +307,8 @@ export class Orchestrator {
     let candidates: Issue[];
     try {
       candidates = await this.deps.linear.fetchActiveCandidates(
-        this.deps.config.tracker.project_slug,
-        this.deps.config.tracker.active_states,
+        this.liveConfig.tracker.project_slug,
+        this.liveConfig.tracker.active_states,
       );
     } catch (err) {
       this.emit({ type: 'tick_completed', at: now, error: (err as Error).message });
@@ -293,13 +316,13 @@ export class Orchestrator {
     }
 
     const terminalStates: ReadonlySet<string> = new Set(
-      this.deps.config.tracker.terminal_states,
+      this.liveConfig.tracker.terminal_states,
     );
     const sorted = sortCandidates(candidates);
     const dispatchable = sorted.filter((issue) => !isBlocked(issue, terminalStates));
 
-    const cap = this.deps.config.agent.max_concurrent_agents;
-    const stateCaps = this.deps.config.agent.max_concurrent_agents_by_state;
+    const cap = this.liveConfig.agent.max_concurrent_agents;
+    const stateCaps = this.liveConfig.agent.max_concurrent_agents_by_state;
     // Seed per-state busy counts from issues dispatched in earlier ticks
     // that are still busy. The dispatch loop increments them as new
     // dispatches happen this tick.
@@ -352,7 +375,7 @@ export class Orchestrator {
   private async reconcileRunningDispatches(): Promise<void> {
     const ids = this.state.busyIssueIds();
     if (ids.length === 0) return;
-    const activeStates = new Set(this.deps.config.tracker.active_states);
+    const activeStates = new Set(this.liveConfig.tracker.active_states);
 
     await Promise.all(
       ids.map(async (issueId) => {
@@ -404,7 +427,7 @@ export class Orchestrator {
       const attemptNumber = this.state.attemptCount(issue.id);
       const prompt = resumeSessionId
         ? buildContinuationPrompt(issue, attemptNumber)
-        : renderPrompt(this.deps.promptTemplate, {
+        : renderPrompt(this.livePromptTemplate, {
             issue: buildIssueView(issue),
             attempt: null,
           });
@@ -413,14 +436,14 @@ export class Orchestrator {
         dispatchMcpServers.symphony_linear = createSymphonyLinearMcpServer({
           currentIssue: issue,
           writes: this.deps.linearWrites,
-          projectSlug: this.deps.config.tracker.project_slug,
-          disabledTools: this.deps.config.claude.symphony_linear_disabled_tools,
+          projectSlug: this.liveConfig.tracker.project_slug,
+          disabledTools: this.liveConfig.claude.symphony_linear_disabled_tools,
         });
       }
       const result = await this.deps.agent.run({
         workspacePath: ws.path,
         prompt,
-        config: this.deps.config.claude,
+        config: this.liveConfig.claude,
         resumeSessionId,
         dispatchMcpServers,
         externalAbort: externalAbort.signal,
@@ -486,7 +509,7 @@ export class Orchestrator {
     workspacePath: string,
     tolerateFailure = false,
   ): Promise<void> {
-    const script = this.deps.config.hooks[name];
+    const script = this.liveConfig.hooks[name];
     if (!script) return;
     try {
       await runHook(
@@ -499,7 +522,7 @@ export class Orchestrator {
           ISSUE_URL: issue.url ?? '',
           WORKSPACE_PATH: workspacePath,
         },
-        { timeoutMs: this.deps.config.hooks.timeout_ms },
+        { timeoutMs: this.liveConfig.hooks.timeout_ms },
       );
     } catch (err) {
       if (err instanceof HookExecutionError) {
@@ -580,7 +603,7 @@ export class Orchestrator {
 
     const stillActive =
       refreshed !== null &&
-      this.deps.config.tracker.active_states.includes(refreshed.state);
+      this.liveConfig.tracker.active_states.includes(refreshed.state);
 
     if (!stillActive) {
       this.state.markCompleted(issue.id);
@@ -626,7 +649,7 @@ export class Orchestrator {
       } finally {
         this.scheduleNextTick();
       }
-    }, this.deps.config.polling.interval_ms);
+    }, this.liveConfig.polling.interval_ms);
     // Intentionally NOT unref()'d — the timer is what keeps the Node process
     // alive between ticks. stop() clears the timer explicitly, so the process
     // exits cleanly through SIGINT/SIGTERM in bin/claude-symphony.ts.

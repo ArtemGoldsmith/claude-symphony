@@ -4,6 +4,8 @@
 // `runCli(argv)` is exported separately from the bin/* entry so unit tests
 // can drive it deterministically. The bin entry just calls runCli(process.argv).
 
+import fs from 'node:fs';
+
 import { LinearClient } from '@linear/sdk';
 
 import { parseWorkflowConfig } from '../config/schema.js';
@@ -195,9 +197,48 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
 
   await orchestrator.start();
 
+  // Phase 3 P4: hot reload of WORKFLOW.md. Watch the file; on change,
+  // re-load + validate + resolve + preflight + swap config behind the
+  // orchestrator. A reload that fails any stage is logged and the daemon
+  // keeps running with the previous good config.
+  let reloadInProgress = false;
+  let reloadDebounce: ReturnType<typeof setTimeout> | null = null;
+  const watcher = fs.watch(definition.sourcePath, () => {
+    if (reloadDebounce !== null) clearTimeout(reloadDebounce);
+    // Editors typically save through a write+rename dance that fires
+    // multiple events in quick succession; debounce so we reload once.
+    reloadDebounce = setTimeout(async () => {
+      reloadDebounce = null;
+      if (reloadInProgress) return;
+      reloadInProgress = true;
+      try {
+        const reloaded = await loadWorkflow(definition.sourcePath);
+        const validatedReload = parseWorkflowConfig(reloaded.config);
+        const resolvedReload = resolveConfig(validatedReload, process.env);
+        preflightConfig(resolvedReload, reloaded.config);
+        orchestrator.setConfig(resolvedReload, reloaded.promptTemplate);
+      } catch (err) {
+        logger.warn(
+          { kind: 'reload', error: (err as Error).message },
+          'WORKFLOW.md reload failed; keeping previous config',
+        );
+      } finally {
+        reloadInProgress = false;
+      }
+    }, 200);
+  });
+  watcher.on('error', (err: Error) => {
+    logger.warn({ kind: 'reload', error: err.message }, 'WORKFLOW.md watcher error');
+  });
+
   return {
     stop: async () => {
       logger.info('claude-symphony stopping');
+      if (reloadDebounce !== null) {
+        clearTimeout(reloadDebounce);
+        reloadDebounce = null;
+      }
+      watcher.close();
       await orchestrator.stop();
       logger.info('claude-symphony stopped');
     },

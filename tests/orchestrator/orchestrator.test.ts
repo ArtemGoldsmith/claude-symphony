@@ -1034,6 +1034,45 @@ describe('Orchestrator lifecycle hooks (before_run / after_run)', () => {
   });
 });
 
+describe('Orchestrator hot reload (Phase 3 P4)', () => {
+  it('setConfig swaps live config and emits config_reloaded', async () => {
+    const fakes = buildFakes({ candidates: [] });
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'old prompt',
+      config: makeConfig({ maxConcurrent: 2 }),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    const newConfig = makeConfig({ maxConcurrent: 7 });
+    orchestrator.setConfig(newConfig, 'new prompt');
+
+    const reloaded = fakes.events.find((e) => e.type === 'config_reloaded');
+    expect(reloaded).toBeDefined();
+  });
+
+  it('next dispatch uses new prompt template after setConfig', async () => {
+    const candidates = [makeIssue({ id: 'i1', identifier: 'CHR-1' })];
+    const fakes = buildFakes({ candidates, postSuccessLinearState: 'Done' });
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'OLD {{ issue.identifier }}',
+      config: makeConfig(),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    orchestrator.setConfig(makeConfig(), 'NEW {{ issue.identifier }}');
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+
+    expect(fakes.agentInputs[0]?.prompt).toBe('NEW CHR-1');
+  });
+});
+
 describe('Orchestrator startup recovery', () => {
   let workspaceRoot: string;
 
