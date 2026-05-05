@@ -19,6 +19,27 @@ export interface RetryEntry {
   notBefore: number;
 }
 
+/**
+ * Serializable snapshot of orchestrator state — what we persist to disk
+ * (Phase 3 P5). Excludes ephemeral fields (in-flight promises, abort
+ * controllers); those reconstruct themselves naturally on the next tick
+ * after hydration.
+ */
+export interface SerializedOrchestratorState {
+  version: 1;
+  savedAt: number;
+  issues: Record<
+    string,
+    {
+      state: IssueRunState;
+      attemptCount: number;
+      failureCount: number;
+      sessionId?: string;
+      retry?: RetryEntry;
+    }
+  >;
+}
+
 export class OrchestratorState {
   private readonly states = new Map<string, IssueRunState>();
   private readonly retries = new Map<string, RetryEntry>();
@@ -26,6 +47,21 @@ export class OrchestratorState {
   private readonly failures = new Map<string, number>();
   private readonly sessionIds = new Map<string, string>();
   private readonly inflight = new Set<Promise<void>>();
+
+  /**
+   * Hook fired after every state-mutating method completes. Used by the
+   * orchestrator to persist changes to disk (Phase 3 P5). No-op by default.
+   */
+  onChanged: () => void = () => undefined;
+
+  private touch(): void {
+    try {
+      this.onChanged();
+    } catch {
+      // Persistence failures must not break orchestrator state; the
+      // caller is expected to log inside onChanged if it cares.
+    }
+  }
 
   stateOf(issueId: string): IssueRunState {
     return this.states.get(issueId) ?? 'idle';
@@ -59,11 +95,13 @@ export class OrchestratorState {
   incrementFailureCount(issueId: string): number {
     const next = (this.failures.get(issueId) ?? 0) + 1;
     this.failures.set(issueId, next);
+    this.touch();
     return next;
   }
 
   resetFailureCount(issueId: string): void {
     this.failures.delete(issueId);
+    this.touch();
   }
 
   /**
@@ -77,10 +115,12 @@ export class OrchestratorState {
 
   setSessionId(issueId: string, sessionId: string): void {
     this.sessionIds.set(issueId, sessionId);
+    this.touch();
   }
 
   clearSessionId(issueId: string): void {
     this.sessionIds.delete(issueId);
+    this.touch();
   }
 
   /**
@@ -123,11 +163,13 @@ export class OrchestratorState {
   claim(issueId: string): void {
     this.states.set(issueId, 'claimed');
     this.retries.delete(issueId);
+    this.touch();
   }
 
   markRunning(issueId: string): void {
     this.states.set(issueId, 'running');
     this.attempts.set(issueId, (this.attempts.get(issueId) ?? 0) + 1);
+    this.touch();
   }
 
   markCompleted(issueId: string): void {
@@ -135,6 +177,7 @@ export class OrchestratorState {
     this.retries.delete(issueId);
     this.sessionIds.delete(issueId);
     this.failures.delete(issueId);
+    this.touch();
   }
 
   markFailed(issueId: string): void {
@@ -142,11 +185,13 @@ export class OrchestratorState {
     this.retries.delete(issueId);
     this.sessionIds.delete(issueId);
     this.failures.delete(issueId);
+    this.touch();
   }
 
   scheduleRetry(issueId: string, notBefore: number): void {
     this.states.set(issueId, 'retry_pending');
     this.retries.set(issueId, { notBefore });
+    this.touch();
   }
 
   /**
@@ -158,6 +203,7 @@ export class OrchestratorState {
   markIdleForContinuation(issueId: string): void {
     this.states.set(issueId, 'idle');
     this.retries.delete(issueId);
+    this.touch();
   }
 
   /** Total number of issues currently `claimed` or `running`. */
@@ -187,5 +233,59 @@ export class OrchestratorState {
       const snapshot = Array.from(this.inflight);
       await Promise.allSettled(snapshot);
     }
+  }
+
+  /**
+   * Snapshot of the persistable state (Phase 3 P5). Excludes ephemeral
+   * fields (in-flight promises, abort controllers, the "running" / "claimed"
+   * busy markers — those reset to idle on the next boot).
+   */
+  serialize(): SerializedOrchestratorState {
+    const issues: SerializedOrchestratorState['issues'] = {};
+    const ids = new Set<string>([
+      ...this.states.keys(),
+      ...this.attempts.keys(),
+      ...this.failures.keys(),
+      ...this.sessionIds.keys(),
+      ...this.retries.keys(),
+    ]);
+    for (const id of ids) {
+      const entry: SerializedOrchestratorState['issues'][string] = {
+        state: this.states.get(id) ?? 'idle',
+        attemptCount: this.attempts.get(id) ?? 0,
+        failureCount: this.failures.get(id) ?? 0,
+      };
+      const sid = this.sessionIds.get(id);
+      if (sid !== undefined) entry.sessionId = sid;
+      const retry = this.retries.get(id);
+      if (retry !== undefined) entry.retry = retry;
+      issues[id] = entry;
+    }
+    return { version: 1, savedAt: Date.now(), issues };
+  }
+
+  /**
+   * Replace state with a previously-serialized snapshot. `claimed` and
+   * `running` states from a prior process are stale (the dispatch is dead);
+   * those reset to `idle` so the next tick can re-dispatch with the
+   * preserved sessionId / failureCount intact.
+   */
+  hydrate(snapshot: SerializedOrchestratorState): void {
+    this.states.clear();
+    this.attempts.clear();
+    this.failures.clear();
+    this.sessionIds.clear();
+    this.retries.clear();
+    for (const [id, entry] of Object.entries(snapshot.issues)) {
+      const safeState: IssueRunState =
+        entry.state === 'claimed' || entry.state === 'running' ? 'idle' : entry.state;
+      this.states.set(id, safeState);
+      if (entry.attemptCount > 0) this.attempts.set(id, entry.attemptCount);
+      if (entry.failureCount > 0) this.failures.set(id, entry.failureCount);
+      if (entry.sessionId !== undefined) this.sessionIds.set(id, entry.sessionId);
+      if (entry.retry !== undefined) this.retries.set(id, entry.retry);
+    }
+    // Hydration itself doesn't fire onChanged — caller decides whether to
+    // re-save (typically yes, to migrate the file's savedAt).
   }
 }

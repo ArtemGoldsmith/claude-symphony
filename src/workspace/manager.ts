@@ -22,6 +22,8 @@ export interface WorkspaceManagerOptions {
   root: string;
   /** Optional after_create hook script body (already validated). */
   afterCreateHook?: string | undefined;
+  /** Optional before_remove hook script body. Runs in cwd before rm-rf. */
+  beforeRemoveHook?: string | undefined;
   /** Optional per-hook timeout in milliseconds. Defaults to runHook's default. */
   hookTimeoutMs?: number;
 }
@@ -41,6 +43,36 @@ export class WorkspaceManager {
   pathFor(identifier: string): string {
     assertSafeIssueIdentifier(identifier);
     return joinWithinRoot(this.options.root, identifier);
+  }
+
+  /**
+   * Phase 3 P6: run the configured before_remove hook (if any) and then
+   * recursively delete the per-issue workspace directory. Idempotent —
+   * a missing directory is treated as success.
+   */
+  async removeWorkspace(issue: Issue): Promise<void> {
+    assertSafeIssueIdentifier(issue.identifier);
+    const workspacePath = joinWithinRoot(this.options.root, issue.identifier);
+    const exists = await directoryExists(workspacePath);
+    if (!exists) return;
+
+    if (this.options.beforeRemoveHook && this.options.beforeRemoveHook.length > 0) {
+      await runHook(
+        this.options.beforeRemoveHook,
+        workspacePath,
+        {
+          ISSUE_ID: issue.id,
+          ISSUE_IDENTIFIER: issue.identifier,
+          ISSUE_TITLE: issue.title,
+          ISSUE_URL: issue.url ?? '',
+          WORKSPACE_PATH: workspacePath,
+        },
+        this.options.hookTimeoutMs !== undefined
+          ? { timeoutMs: this.options.hookTimeoutMs }
+          : {},
+      );
+    }
+    await fs.rm(workspacePath, { recursive: true, force: true });
   }
 
   /**
@@ -92,3 +124,4 @@ async function directoryExists(target: string): Promise<boolean> {
     throw err;
   }
 }
+

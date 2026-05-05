@@ -15,6 +15,7 @@ import { createLinearWriteGateway } from '../linear/writes.js';
 import { WorkspaceManager } from '../workspace/manager.js';
 import { AgentRunner, createSdkQueryFactory, type QueryFactory } from '../agent/runner.js';
 import { Orchestrator } from '../orchestrator/orchestrator.js';
+import { loadStateFromDisk, saveStateToDisk } from '../orchestrator/persistence.js';
 import { createLogger, writeOrchestratorEvent } from '../observability/log.js';
 
 export class CliError extends Error {
@@ -139,6 +140,7 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
   const workspaceManager = new WorkspaceManager({
     root: resolved.workspace.root,
     afterCreateHook: resolved.hooks.after_create,
+    beforeRemoveHook: resolved.hooks.before_remove,
     hookTimeoutMs: resolved.hooks.timeout_ms,
   });
 
@@ -164,6 +166,10 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
     );
   }
 
+  // State persistence (Phase 3 P5). Save snapshots to <logsRoot> so a daemon
+  // restart preserves sessionId, attempt counters, retry windows. Saves are
+  // best-effort fire-and-forget; a failed write is logged but does NOT
+  // block orchestrator progress.
   const orchestrator = new Orchestrator({
     linear: linearGateway,
     linearWrites: linearWriteGateway,
@@ -172,7 +178,20 @@ export async function runCli(argv: string[], deps: RunCliDeps = {}): Promise<{
     promptTemplate: definition.promptTemplate,
     config: resolved,
     onEvent: (event) => writeOrchestratorEvent(logger, event),
+    onStateChanged: (snapshot) => {
+      void saveStateToDisk(args.logsRoot, snapshot).catch((err: Error) => {
+        logger.warn({ kind: 'persistence', error: err.message }, 'state save failed');
+      });
+    },
   });
+
+  const loaded = await loadStateFromDisk(args.logsRoot);
+  if (loaded.snapshot !== null) {
+    orchestrator.hydrate(loaded.snapshot);
+    logger.info({ kind: 'persistence' }, loaded.note);
+  } else {
+    logger.debug({ kind: 'persistence' }, loaded.note);
+  }
 
   await orchestrator.start();
 

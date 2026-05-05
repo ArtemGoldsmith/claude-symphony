@@ -848,6 +848,46 @@ describe('isBlocked', () => {
   });
 });
 
+describe('Orchestrator.tick — per-state concurrency caps (Phase 3 P7)', () => {
+  it('honours max_concurrent_agents_by_state on top of the global cap', async () => {
+    const candidates = [
+      makeIssue({ id: 'a', identifier: 'CHR-A', state: 'In Progress', priority: 1, createdAt: '2026-01-01T00:00:00Z' }),
+      makeIssue({ id: 'b', identifier: 'CHR-B', state: 'In Progress', priority: 2, createdAt: '2026-01-01T00:00:00Z' }),
+      makeIssue({ id: 'c', identifier: 'CHR-C', state: 'In Progress', priority: 3, createdAt: '2026-01-01T00:00:00Z' }),
+      makeIssue({ id: 'd', identifier: 'CHR-D', state: 'Todo', priority: 4, createdAt: '2026-01-01T00:00:00Z' }),
+    ];
+    const fakes = buildFakes({ candidates, postSuccessLinearState: 'Done' });
+
+    // Global cap 5 (no global pressure), but In Progress capped at 2.
+    const cfg = parseWorkflowConfig({
+      tracker: { kind: 'linear', project_slug: 'chronicle', active_states: ['Todo', 'In Progress'] },
+      workspace: { root: '/tmp/workspaces' },
+      polling: { interval_ms: 5_000 },
+      agent: {
+        max_concurrent_agents: 5,
+        max_concurrent_agents_by_state: { 'In Progress': 2 },
+      },
+      claude: { mcp_servers: { linear: { type: 'http', url: 'https://mcp.linear.app/mcp' } } },
+    });
+    const resolved = resolveConfig(cfg, { LINEAR_API_KEY: 'lin_test' });
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: resolved,
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.tick();
+    await orchestrator.state.drain();
+
+    // Expected: 2 In-Progress (cap), 1 Todo (no cap), one In-Progress skipped.
+    expect(fakes.workspaceCalls.sort()).toEqual(['CHR-A', 'CHR-B', 'CHR-D'].sort());
+  });
+});
+
 describe('Orchestrator.tick — blocker gate + sort integration', () => {
   it('dispatches in priority/createdAt order and skips a blocked Todo', async () => {
     const candidates = [
@@ -1056,6 +1096,47 @@ describe('Orchestrator startup recovery', () => {
 
     const recovery = fakes.events.find((e) => e.type === 'startup_recovery');
     expect(recovery?.recoveredIssueIdentifiers).toEqual(['CHR-1', 'CHR-7']);
+  });
+
+  it('cleans up worktrees whose Linear state is now terminal (Phase 3 P6)', async () => {
+    await fs.mkdir(path.join(workspaceRoot, 'CHR-1')); // active, will survive
+    await fs.mkdir(path.join(workspaceRoot, 'CHR-9')); // terminal, will be removed
+
+    const fakes = buildFakes({
+      candidates: [
+        makeIssue({ id: 'i1', identifier: 'CHR-1', state: 'In Progress' }),
+        makeIssue({ id: 'i9', identifier: 'CHR-9', state: 'Done' }),
+      ],
+    });
+    // Ensure both states are seeded so fetchIssueByIdentifier returns the
+    // current snapshot.
+    fakes.linearStates.set('CHR-1', 'In Progress');
+    fakes.linearStates.set('CHR-9', 'Done');
+    // The fake workspace manager doesn't actually rm — wire a real one.
+    (fakes.workspace as unknown as { removeWorkspace: (issue: Issue) => Promise<void> }).removeWorkspace = vi.fn(
+      async (issue: Issue) => {
+        await fs.rm(path.join(workspaceRoot, issue.identifier), { recursive: true, force: true });
+      },
+    );
+
+    const orchestrator = new Orchestrator({
+      linear: fakes.linear,
+      workspace: fakes.workspace,
+      agent: fakes.agent,
+      promptTemplate: 'p',
+      config: configWithRoot(workspaceRoot),
+      onEvent: (e) => fakes.events.push(e),
+    });
+
+    await orchestrator.start();
+    await orchestrator.stop();
+
+    const cleaned = fakes.events.find((e) => e.type === 'workspace_cleaned');
+    expect(cleaned?.issueIdentifier).toBe('CHR-9');
+
+    // CHR-9 deleted, CHR-1 preserved.
+    const remaining = (await fs.readdir(workspaceRoot)).sort();
+    expect(remaining).toEqual(['CHR-1']);
   });
 
   it('survives a missing workspace root without throwing', async () => {

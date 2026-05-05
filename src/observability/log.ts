@@ -126,6 +126,20 @@ export function writeOrchestratorEvent(logger: Logger, event: OrchestratorEvent)
       );
       break;
 
+    case 'workspace_cleaned':
+      if (event.error) {
+        logger.warn(
+          { ...base, linearStateAfterRun: event.linearStateAfterRun, error: event.error },
+          `workspace cleanup failed for ${event.issueIdentifier}`,
+        );
+      } else {
+        logger.info(
+          { ...base, linearStateAfterRun: event.linearStateAfterRun },
+          `workspace removed for ${event.issueIdentifier} (Linear: ${event.linearStateAfterRun})`,
+        );
+      }
+      break;
+
     case 'reconcile_aborted':
       logger.warn(
         { ...base, linearStateAfterRun: event.linearStateAfterRun },

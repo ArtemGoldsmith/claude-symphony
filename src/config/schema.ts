@@ -57,6 +57,15 @@ export type HooksConfig = z.infer<typeof HooksConfigSchema>;
 export const AgentConfigSchema = z
   .object({
     max_concurrent_agents: z.number().int().positive().default(5),
+    /**
+     * Optional per-state caps that further constrain concurrency on top of
+     * the global `max_concurrent_agents`. Keys are state names exactly as
+     * Linear emits them (case-sensitive). Default `{}` = global cap only.
+     * Example: { "In Progress": 3, "Rework": 1 }.
+     */
+    max_concurrent_agents_by_state: z
+      .record(z.string(), z.number().int().nonnegative())
+      .default({}),
   })
   .default({});
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;

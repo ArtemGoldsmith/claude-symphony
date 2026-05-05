@@ -37,6 +37,7 @@ export interface OrchestratorEvent {
     | 'retry_skipped'
     | 'reconcile_aborted'
     | 'startup_recovery'
+    | 'workspace_cleaned'
     | 'agent_stderr';
   at: number;
   issueId?: string;
@@ -79,6 +80,12 @@ export interface OrchestratorDeps {
   onEvent?: (event: OrchestratorEvent) => void;
   /** Override for `Date.now()`; tests inject a controllable clock. */
   now?: () => number;
+  /**
+   * Called after every state mutation so the CLI can persist the snapshot
+   * to disk (Phase 3 P5). Errors thrown here are swallowed by the state
+   * layer; persistence-side logging is the caller's responsibility.
+   */
+  onStateChanged?: (snapshot: import('./state.js').SerializedOrchestratorState) => void;
 }
 
 import { OrchestratorState } from './state.js';
@@ -157,7 +164,22 @@ export class Orchestrator {
   private running = false;
   private nextTickTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly deps: OrchestratorDeps) {}
+  constructor(private readonly deps: OrchestratorDeps) {
+    if (deps.onStateChanged) {
+      this.state.onChanged = () => {
+        deps.onStateChanged!(this.state.serialize());
+      };
+    }
+  }
+
+  /**
+   * Replace in-memory state with a previously-saved snapshot. Called by the
+   * CLI on boot when a state file is present. Hydration does NOT fire
+   * onStateChanged; the caller is expected to take it from there.
+   */
+  hydrate(snapshot: import('./state.js').SerializedOrchestratorState): void {
+    this.state.hydrate(snapshot);
+  }
 
   /** Start the poll loop. Resolves once the orchestrator has scheduled its first tick. */
   async start(): Promise<void> {
@@ -197,6 +219,48 @@ export class Orchestrator {
       at: this.deps.now?.() ?? Date.now(),
       recoveredIssueIdentifiers: recovered,
     });
+    await this.cleanupTerminalWorktrees(recovered);
+  }
+
+  /**
+   * Phase 3 P6: for each recovered worktree, ask Linear what state the
+   * issue is in. If terminal, run the before_remove hook (if configured)
+   * and rm -rf the worktree. Issues we can't reach Linear for are kept
+   * (operator can clean manually); issues whose Linear state is anything
+   * other than terminal are kept (the next tick will pick them up).
+   */
+  private async cleanupTerminalWorktrees(identifiers: string[]): Promise<void> {
+    if (identifiers.length === 0) return;
+    const terminal = new Set(this.deps.config.tracker.terminal_states);
+    for (const identifier of identifiers) {
+      let issue;
+      try {
+        issue = await this.deps.linear.fetchIssueByIdentifier(identifier);
+      } catch {
+        continue; // Linear flake — leave the worktree alone
+      }
+      if (issue === null) continue; // identifier no longer exists in Linear
+      if (!terminal.has(issue.state)) continue;
+      try {
+        await this.deps.workspace.removeWorkspace(issue);
+        this.emit({
+          type: 'workspace_cleaned',
+          at: this.deps.now?.() ?? Date.now(),
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+          linearStateAfterRun: issue.state,
+        });
+      } catch (err) {
+        this.emit({
+          type: 'workspace_cleaned',
+          at: this.deps.now?.() ?? Date.now(),
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+          linearStateAfterRun: issue.state,
+          error: (err as Error).message,
+        });
+      }
+    }
   }
 
   /** Stop polling and wait for in-flight dispatches to drain. */
@@ -235,6 +299,17 @@ export class Orchestrator {
     const dispatchable = sorted.filter((issue) => !isBlocked(issue, terminalStates));
 
     const cap = this.deps.config.agent.max_concurrent_agents;
+    const stateCaps = this.deps.config.agent.max_concurrent_agents_by_state;
+    // Seed per-state busy counts from issues dispatched in earlier ticks
+    // that are still busy. The dispatch loop increments them as new
+    // dispatches happen this tick.
+    const perStateBusy = new Map<string, number>();
+    for (const issue of dispatchable) {
+      if (this.state.isBusy(issue.id)) {
+        perStateBusy.set(issue.state, (perStateBusy.get(issue.state) ?? 0) + 1);
+      }
+    }
+
     for (const issue of dispatchable) {
       if (this.state.busyCount() >= cap) break;
       if (this.state.isBusy(issue.id)) continue;
@@ -249,9 +324,18 @@ export class Orchestrator {
         });
         continue;
       }
+      const stateCap = stateCaps[issue.state];
+      if (stateCap !== undefined && (perStateBusy.get(issue.state) ?? 0) >= stateCap) {
+        // Per-state cap reached. The issue is eligible globally but the
+        // operator has limited concurrent dispatches in this Linear state.
+        // Try the next candidate; this one will get picked up on a later
+        // tick when an "In Progress" run finishes.
+        continue;
+      }
 
       this.state.claim(issue.id);
       this.state.trackInflight(this.dispatchOne(issue));
+      perStateBusy.set(issue.state, (perStateBusy.get(issue.state) ?? 0) + 1);
     }
 
     await this.reconcileRunningDispatches();
