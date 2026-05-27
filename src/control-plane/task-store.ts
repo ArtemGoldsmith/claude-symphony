@@ -90,6 +90,22 @@ export class TaskStore {
     return next;
   }
 
+  /**
+   * Return the live record for a CAS, reconciling the cache from disk first.
+   * If disk has a NEWER rev than the cache (a different generation wrote it),
+   * adopt the disk record so the CAS compares against the true latest rev.
+   */
+  private async liveForCas(ticket: string): Promise<TaskRecord> {
+    const cached = this.cache.get(ticket);
+    const disk = await readTaskRecord(this.stateRoot, ticket);
+    if (!cached && !disk) throw new UnknownTaskError(ticket);
+    if (disk && (!cached || disk.rev > cached.rev)) {
+      this.cache.set(ticket, disk);
+      return disk;
+    }
+    return cached!;
+  }
+
   async create(args: { ticket: string; title: string; url: string }): Promise<TaskRecord> {
     return this.enqueue(args.ticket, async () => {
       // Reject a ticket already tracked in-memory OR on disk (spec §12 — the
@@ -127,8 +143,7 @@ export class TaskStore {
    */
   async advance(ticket: string, args: AdvanceArgs): Promise<TaskRecord> {
     return this.enqueue(ticket, async () => {
-      const live = this.cache.get(ticket);
-      if (!live) throw new UnknownTaskError(ticket);
+      const live = await this.liveForCas(ticket);
       if (live.rev !== args.expectRev) throw new StaleRevError(ticket, args.expectRev, live.rev);
       assertTransition(live.phase, args.to);
 
@@ -139,6 +154,34 @@ export class TaskStore {
       next.ownerGen = this.ownerGen;
       if (args.mutate) args.mutate(next);
 
+      await writeTaskRecord(this.stateRoot, next);
+      this.cache.set(ticket, next);
+      return structuredClone(next);
+    });
+  }
+
+  /**
+   * CAS-update fields WITHOUT a phase transition (spec §12 — currentRun/session
+   * writes that don't change phase still go through the per-task queue + rev bump).
+   */
+  async updateRun(
+    ticket: string,
+    expectRev: number,
+    mutate: (record: TaskRecord) => void,
+  ): Promise<TaskRecord> {
+    return this.enqueue(ticket, async () => {
+      const live = await this.liveForCas(ticket);
+      if (live.rev !== expectRev) throw new StaleRevError(ticket, expectRev, live.rev);
+      const next: TaskRecord = structuredClone(live);
+      next.rev = live.rev + 1;
+      next.updatedAt = this.now();
+      next.ownerGen = this.ownerGen;
+      mutate(next);
+      // Invariant: updateRun is transition-free — a phase change must go through
+      // advance() so it is validated + slot-accounted.
+      if (next.phase !== live.phase) {
+        throw new Error(`updateRun must not change phase (${live.phase} → ${next.phase}); use advance()`);
+      }
       await writeTaskRecord(this.stateRoot, next);
       this.cache.set(ticket, next);
       return structuredClone(next);

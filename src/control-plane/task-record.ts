@@ -20,7 +20,10 @@ const RunRecordSchema = z.object({
   spawnedAt: z.number().int(),
   sessionId: z.string().nullable(),
   log: z.string(),
+  ownerGen: z.string(),
 });
+
+export type RunRecord = z.infer<typeof RunRecordSchema>;
 
 const OpenQuestionsSchema = z.object({
   rev: z.number().int().nonnegative(),
