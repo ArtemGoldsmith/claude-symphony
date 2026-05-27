@@ -14,6 +14,28 @@ Anything else found to differ during implementation is a bug in the port, not a 
 
 ---
 
+## Control-plane re-scope (supersedes the polling MVP)
+
+The daemon is no longer a poll-and-dispatch loop. It is a **UI-driven control plane** with **human approval gates**: a small web board (bound to a Tailscale IP or loopback, never a wildcard) drives each task through its lifecycle, and a human approves at the gates rather than the daemon dispatching autonomously off tracker state.
+
+What this changes versus the original MVP (§A–§G below describe the agent-runner deviations, which still hold for the per-stage agent; the orchestration model around them is re-scoped):
+
+- **Linear polling is retired.** There is no `tracker.polling`, no candidate-selection tick, no poll-driven dispatch. Linear is consumed **read-only** through a read-scoped token (`linear.read_token_env`, never `LINEAR_API_KEY`).
+- **Agent dispatch is via `claude -p` + a run wrapper**, one agent per lifecycle stage, spawned by a process manager rather than driven by the in-process SDK poll loop. The control-plane config lives in `src/control-plane/config.ts` (see `examples/control-plane.WORKFLOW.md`).
+- **Lifecycle is an explicit, human-gated state machine:**
+  `queued → prepping → awaiting_approval → approved → executing → reviewing → {gapfixing | closing} → closing → previewing → ready → done` (or `abandoned`).
+  The `awaiting_approval` gate is human-driven; the prep/execute/review/gapfix/closeout stages each map to a prompt in the `prompts.*` block.
+- **Defense-in-depth is mandatory, not optional.** Three layers, all required:
+  1. a Claude Code **settings deny policy** on the agent;
+  2. a **hardened pre-push** hook (the agent may push only its own task branch);
+  3. a **minimal env allowlist** — only the read-scoped Linear token plus explicitly-named build-essential vars (`agent.extra_env`) reach the agent; the board bearer (`web.auth_token_env`) and push credentials never do. The config schema enforces this (secret-suffix refinement + the read-token ≠ board-token invariant).
+
+Box-specific wiring (real Tailscale IP, host, home paths, ntfy topic, prompt bodies) is kept **outside the public repo**; only placeholders appear here and in the example. The tracked-file grep guard (`scripts/check-public-invariants.sh`, enforced by `tests/control-plane/public-invariants.test.ts`) fails the build on any leak (§11/§13).
+
+The sections below (§A–§G) document the agent-runner and front-matter deviations that predate the re-scope; the agent-runner contract (§A) still applies to each per-stage agent.
+
+---
+
 ## A. Agent Runner — replaces SPEC.md §10 wholesale
 
 `SPEC.md` §10 is written against the [Codex app-server protocol](https://developers.openai.com/codex/app-server/). `claude-symphony` does not run a Codex app-server. The Agent Runner instead drives the [Anthropic Claude Agent SDK](https://docs.anthropic.com/) (`@anthropic-ai/claude-agent-sdk`) directly from TypeScript.

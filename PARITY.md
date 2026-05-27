@@ -196,6 +196,36 @@ This document is the canonical progress tracker. It is updated **in the same com
 
 ---
 
+## Retired — control-plane re-scope
+
+The daemon was re-scoped from a poll-and-dispatch loop to a UI-driven control plane with human approval gates (see `SPEC-claude.md` → "Control-plane re-scope"). The rows below are **retired**: Linear polling, autonomous candidate dispatch, and the orchestrator-side multi-`query()` continuation loop are no longer part of the design. Their original spec sections are preserved for upstream traceability, but the corresponding MVP behaviour is superseded by the control-plane lifecycle.
+
+| Spec / feature | Status | Notes |
+|---|---|---|
+| §8.1 Poll loop | ⚪ Retired | No poll loop — the control plane is UI-driven, not tracker-polled |
+| §8.2 Candidate selection | ⚪ Retired | No autonomous candidate dispatch; tasks enter via the board (`queued`) |
+| §8.3 Concurrency control (poll-side) | ⚪ Retired | Slot accounting moves to the control-plane dispatcher; see new rows |
+| §16.2 Poll-and-dispatch tick | ⚪ Retired | Replaced by the human-gated lifecycle transition engine |
+| §7.2 / §12.3 Orchestrator-driven multi-`query()` continuation | ⚪ Retired | Continuation is the explicit lifecycle (`executing → reviewing → gapfixing → …`), not a re-`query()` loop — `SPEC-claude.md` §C is moot |
+| §11.5 Tracker writes via injected client | ⚪ Retired | Linear is read-only in the control plane; no orchestrator/agent write surface |
+
+## Control-plane modules (new)
+
+New modules introduced by the re-scope. Lifecycle: `queued → prepping → awaiting_approval → approved → executing → reviewing → {gapfixing | closing} → closing → previewing → ready → done | abandoned`.
+
+| Module | Status | Notes |
+|---|---|---|
+| Process manager / run wrapper | 🟡 Partial | `src/control-plane/{process-manager,proc}.ts` — spawns one `claude -p` agent per lifecycle stage under a minimal env allowlist |
+| `LinearReadGateway` | 🟡 Partial | `src/control-plane/linear-read.ts` — read-only Linear access via a read-scoped token (`linear.read_token_env`, never `LINEAR_API_KEY`) over the AI gateway proto |
+| Intake | 🟡 Partial | `src/control-plane/intake.ts` — turns an approved Linear item into a `queued` task with a worktree forked from `workspace.base_branch` |
+| Settings deny policy | 🟡 Partial | `src/control-plane/settings-policy.ts` — Claude Code settings deny list applied to each agent — defense-in-depth layer 1 |
+| Hardened pre-push | 🟡 Partial | `src/control-plane/pre-push.ts` — pre-push hook restricting the agent to pushing only its own task branch — layer 2 |
+| Dispatcher engine | 🟡 Partial | `src/control-plane/{config,task-store,slots,lock,phase,engine,routing}.ts` — config schema, single-daemon lock, synchronous slot counter, boot scan/snapshot index, and the lifecycle transition engine |
+| Daemon | 🟡 Partial | `src/control-plane/daemon.ts` — single-instance (proper-lockfile) host; web board binds to a Tailscale IP / loopback (never a wildcard); env allowlist is layer 3; HTTP surface in progress |
+| Public-invariant grep guard | ✅ | `scripts/check-public-invariants.sh` + `tests/control-plane/public-invariants.test.ts` — fails on box/Pinley specifics or secrets in tracked files (§11/§13) |
+
+---
+
 ## Out-of-spec additions
 
 Things `claude-symphony` introduces that have no upstream `SPEC.md` counterpart. Each MUST be justified.

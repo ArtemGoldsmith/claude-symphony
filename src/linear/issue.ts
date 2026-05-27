@@ -20,7 +20,7 @@ export interface IssueRef {
 export interface Issue {
   /** Tracker-internal stable ID (Linear issue.id). */
   id: string;
-  /** Human-readable ticket key (e.g. "PIN-123"). */
+  /** Human-readable ticket key (e.g. "TEAM-123"). */
   identifier: string;
   title: string;
   description: string | null;

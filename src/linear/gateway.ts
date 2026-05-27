@@ -48,7 +48,7 @@ export interface LinearGateway {
   fetchActiveCandidates(projectSlug: string, activeStates: string[]): Promise<Issue[]>;
 
   /**
-   * Fetch a single issue by its human identifier (e.g. "PIN-123"). Returns
+   * Fetch a single issue by its human identifier (e.g. "TEAM-123"). Returns
    * null if no issue with that identifier exists in the workspace the API
    * key is authorized for. Used by reconcile / retry paths that already
    * know the identifier.
