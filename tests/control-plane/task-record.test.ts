@@ -56,4 +56,16 @@ describe('task-record', () => {
     await writeFile(path.join(dir, 'task.json'), '{ not json', 'utf8');
     expect(await readTaskRecord(root, 'PIN-9')).toBeNull();
   });
+
+  it('newTaskRecord defaults retryRequested to false', () => {
+    const r = newTaskRecord({ ticket: 'PIN-9', title: 'X', url: 'u', ownerGen: 'g', now: 1 });
+    expect(r.retryRequested).toBe(false);
+    expect(TaskRecordSchema.parse(r)).toEqual(r);
+  });
+
+  it('teardownTarget accepts queued and rejects the retired prepping value', () => {
+    const r = newTaskRecord({ ticket: 'PIN-8', title: 'X', url: 'u', ownerGen: 'g', now: 1 });
+    expect(() => TaskRecordSchema.parse({ ...r, teardownTarget: 'queued' })).not.toThrow();
+    expect(() => TaskRecordSchema.parse({ ...r, teardownTarget: 'prepping' })).toThrow();
+  });
 });

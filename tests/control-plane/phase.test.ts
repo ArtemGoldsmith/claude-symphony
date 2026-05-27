@@ -5,6 +5,7 @@ import {
   type Phase,
   isSlotPhase,
   isActiveRunPhase,
+  isTerminalPhase,
   assertTransition,
   TransitionError,
 } from '../../src/control-plane/phase.js';
@@ -29,13 +30,13 @@ describe('phase model', () => {
     expect(() => assertTransition('queued', 'prepping')).not.toThrow();
     expect(() => assertTransition('prepping', 'awaiting_approval')).not.toThrow();
     expect(() => assertTransition('awaiting_approval', 'approved')).not.toThrow();
-    expect(() => assertTransition('awaiting_approval', 'prepping')).not.toThrow(); // reject loop
+    expect(() => assertTransition('awaiting_approval', 'queued')).not.toThrow(); // reject loop
     expect(() => assertTransition('reviewing', 'gapfixing')).not.toThrow();
     expect(() => assertTransition('reviewing', 'closing')).not.toThrow(); // no-gaps skip
     expect(() => assertTransition('ready', 'tearing_down')).not.toThrow();
     expect(() => assertTransition('tearing_down', 'done')).not.toThrow();
     expect(() => assertTransition('tearing_down', 'abandoned')).not.toThrow();
-    expect(() => assertTransition('tearing_down', 'prepping')).not.toThrow(); // request-changes
+    expect(() => assertTransition('tearing_down', 'queued')).not.toThrow(); // request-changes
   });
 
   it('rejects illegal transitions with TransitionError', () => {
@@ -64,5 +65,22 @@ describe('phase model', () => {
     expect(() => assertTransition('teardown_failed', 'tearing_down')).not.toThrow();
     // teardown from a failure with no preview goes straight to abandoned (spec §8)
     expect(() => assertTransition('execute_failed', 'abandoned')).not.toThrow();
+  });
+
+  it('v4: web re-prep loops route through queued, not prepping', () => {
+    expect(() => assertTransition('awaiting_approval', 'queued')).not.toThrow(); // reject
+    expect(() => assertTransition('tearing_down', 'queued')).not.toThrow(); // request-changes
+    expect(() => assertTransition('queued', 'prep_failed')).not.toThrow(); // first-prep intake failure
+    // old direct-to-prepping loop targets are gone
+    expect(() => assertTransition('awaiting_approval', 'prepping')).toThrow(TransitionError);
+    expect(() => assertTransition('tearing_down', 'prepping')).toThrow(TransitionError);
+  });
+
+  it('isTerminalPhase is true only for done/abandoned', () => {
+    expect(isTerminalPhase('done')).toBe(true);
+    expect(isTerminalPhase('abandoned')).toBe(true);
+    for (const p of ['queued', 'ready', 'prep_failed', 'execute_failed', 'prepping'] as Phase[]) {
+      expect(isTerminalPhase(p)).toBe(false);
+    }
   });
 });

@@ -55,9 +55,9 @@ export function isActiveRunPhase(p: Phase): boolean {
 // task's recorded `failedFrom`, not pick arbitrarily — this table only bounds
 // what is structurally legal, it does not choose the retry target.
 export const TRANSITIONS: Readonly<Record<Phase, ReadonlySet<Phase>>> = {
-  queued: new Set(['prepping']),
+  queued: new Set(['prepping', 'prep_failed']),
   prepping: new Set(['awaiting_approval', 'prep_failed']),
-  awaiting_approval: new Set(['approved', 'prepping']),
+  awaiting_approval: new Set(['approved', 'queued']),
   approved: new Set(['executing']),
   executing: new Set(['reviewing', 'execute_failed']),
   reviewing: new Set(['gapfixing', 'closing', 'execute_failed']),
@@ -65,7 +65,7 @@ export const TRANSITIONS: Readonly<Record<Phase, ReadonlySet<Phase>>> = {
   closing: new Set(['previewing', 'execute_failed']),
   previewing: new Set(['ready', 'preview_failed']),
   ready: new Set(['tearing_down']),
-  tearing_down: new Set(['done', 'abandoned', 'prepping', 'teardown_failed']),
+  tearing_down: new Set(['done', 'abandoned', 'queued', 'teardown_failed']),
   done: new Set(),
   abandoned: new Set(),
   prep_failed: new Set(['prepping', 'abandoned']),
@@ -90,4 +90,11 @@ export function canTransition(from: Phase, to: Phase): boolean {
 
 export function assertTransition(from: Phase, to: Phase): void {
   if (!canTransition(from, to)) throw new TransitionError(from, to);
+}
+
+/** Terminal phases (a re-add archives the prior state dir; spec §9/§12). */
+const TERMINAL_PHASES: ReadonlySet<Phase> = new Set<Phase>(['done', 'abandoned']);
+
+export function isTerminalPhase(p: Phase): boolean {
+  return TERMINAL_PHASES.has(p);
 }
