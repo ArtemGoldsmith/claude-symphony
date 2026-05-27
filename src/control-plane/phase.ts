@@ -69,7 +69,7 @@ export const TRANSITIONS: Readonly<Record<Phase, ReadonlySet<Phase>>> = {
   done: new Set(),
   abandoned: new Set(),
   prep_failed: new Set(['prepping', 'abandoned']),
-  execute_failed: new Set(['executing', 'gapfixing', 'closing', 'tearing_down', 'abandoned']),
+  execute_failed: new Set(['executing', 'reviewing', 'gapfixing', 'closing', 'tearing_down', 'abandoned']),
   preview_failed: new Set(['previewing', 'tearing_down', 'abandoned']),
   teardown_failed: new Set(['tearing_down', 'abandoned']),
 };

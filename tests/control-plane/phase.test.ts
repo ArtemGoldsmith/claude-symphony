@@ -47,15 +47,19 @@ describe('phase model', () => {
   it('allows every ⊕/active phase to fail to its mapped failure phase', () => {
     expect(() => assertTransition('prepping', 'prep_failed')).not.toThrow();
     expect(() => assertTransition('executing', 'execute_failed')).not.toThrow();
+    expect(() => assertTransition('reviewing', 'execute_failed')).not.toThrow();
     expect(() => assertTransition('gapfixing', 'execute_failed')).not.toThrow();
     expect(() => assertTransition('closing', 'execute_failed')).not.toThrow();
     expect(() => assertTransition('previewing', 'preview_failed')).not.toThrow();
     expect(() => assertTransition('tearing_down', 'teardown_failed')).not.toThrow();
   });
 
-  it('allows operator retry from each failure phase', () => {
+  it('allows operator retry to each execute-chain phase + each failure phase', () => {
     expect(() => assertTransition('prep_failed', 'prepping')).not.toThrow();
     expect(() => assertTransition('execute_failed', 'executing')).not.toThrow();
+    expect(() => assertTransition('execute_failed', 'reviewing')).not.toThrow(); // crashed reviewer retry
+    expect(() => assertTransition('execute_failed', 'gapfixing')).not.toThrow();
+    expect(() => assertTransition('execute_failed', 'closing')).not.toThrow();
     expect(() => assertTransition('preview_failed', 'previewing')).not.toThrow();
     expect(() => assertTransition('teardown_failed', 'tearing_down')).not.toThrow();
     // teardown from a failure with no preview goes straight to abandoned (spec §8)
