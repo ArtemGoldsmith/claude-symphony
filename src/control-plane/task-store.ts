@@ -10,8 +10,9 @@ import {
   newTaskRecord,
   readTaskRecord,
   writeTaskRecord,
+  taskDir,
 } from './task-record.js';
-import { type Phase, assertTransition } from './phase.js';
+import { type Phase, assertTransition, isTerminalPhase } from './phase.js';
 
 export const SNAPSHOT_FILENAME = '.symphony-index.json';
 
@@ -157,6 +158,28 @@ export class TaskStore {
       await writeTaskRecord(this.stateRoot, next);
       this.cache.set(ticket, next);
       return structuredClone(next);
+    });
+  }
+
+  /**
+   * Archive a tracked ticket's state dir (move to $STATE_ROOT/.archive/<ticket>-<rev>-<ts>)
+   * and evict it from the cache, so a subsequent create() can re-add the same
+   * identifier (spec §9/§12 terminal re-add). Runs inside the per-task queue.
+   * Refuses a non-terminal task (defense-in-depth — the store is not a generic
+   * "delete any task" primitive).
+   */
+  async archive(ticket: string): Promise<void> {
+    return this.enqueue(ticket, async () => {
+      const live = await this.liveForCas(ticket); // throws UnknownTaskError if absent
+      if (!isTerminalPhase(live.phase)) {
+        throw new Error(`refusing to archive ${ticket}: phase ${live.phase} is not terminal`);
+      }
+      const src = taskDir(this.stateRoot, ticket);
+      const archiveRoot = path.join(this.stateRoot, '.archive');
+      await fs.mkdir(archiveRoot, { recursive: true });
+      const dest = path.join(archiveRoot, `${ticket}-${live.rev}-${this.now()}`);
+      await fs.rename(src, dest);
+      this.cache.delete(ticket);
     });
   }
 
