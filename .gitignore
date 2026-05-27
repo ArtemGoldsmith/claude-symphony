@@ -20,6 +20,9 @@ state/
 .env.*
 !.env.example
 
+# Brainstorm/visual-companion scratch (never commit)
+.superpowers/
+
 # OS / editor
 .DS_Store
 Thumbs.db
