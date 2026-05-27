@@ -16,6 +16,7 @@ set -u
 SD=$1; RID=$2; KIND=$3; AID=$4; LOGREL=$5
 shift 5
 [ "${1:-}" = "--" ] && shift
+[ "$#" -eq 0 ] && { echo "run-wrapper: no command given" >&2; exit 2; }
 
 LOG="$SD/$LOGREL"
 
@@ -33,7 +34,7 @@ wait "$child"
 code=$?
 
 TMP="$SD/$RID.exit.json.tmp.$$"
-printf '{"runId":"%s","attemptId":%s,"kind":"%s","exitCode":%d,"finishedAt":%d}\n' \
+printf '{"runId":"%s","attemptId":%d,"kind":"%s","exitCode":%d,"finishedAt":%d}\n' \
   "$RID" "$AID" "$KIND" "$code" "$(date +%s)" > "$TMP"
 mv "$TMP" "$SD/$RID.exit.json"
 exit "$code"

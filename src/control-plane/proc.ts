@@ -6,16 +6,32 @@
 
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-// scripts/run-wrapper.sh sits at the repo root's scripts/ dir; resolve relative
-// to this compiled module so it works from dist/ and from tsx alike.
+// scripts/run-wrapper.sh sits at the repo root's scripts/ dir. Walk up from the
+// compiled module's directory so this works regardless of whether we're running
+// via tsx (src/…) or from the build output (dist/src/…).
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-export const WRAPPER_PATH = path.resolve(MODULE_DIR, '../../scripts/run-wrapper.sh');
+
+function resolveWrapperPath(): string {
+  let dir = MODULE_DIR;
+  for (let i = 0; i < 8; i++) {
+    const candidate = path.join(dir, 'scripts', 'run-wrapper.sh');
+    if (fsSync.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // Fall back to the dev-layout path so the export is always a string.
+  return path.resolve(MODULE_DIR, '../../scripts/run-wrapper.sh');
+}
+
+export const WRAPPER_PATH = resolveWrapperPath();
 
 export interface SpawnWrapperArgs {
   stateDir: string;

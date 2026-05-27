@@ -10,6 +10,7 @@ import {
   isProcessAlive,
   readPidFile,
   readExitJson,
+  killGroup,
 } from '../../src/control-plane/proc.js';
 
 let sd: string;
@@ -74,5 +75,41 @@ describe('proc primitives', () => {
     expect(await isProcessAlive(process.pid, 'Thu Jan  1 00:00:00 2000')).toBe(false);
     // a pid that cannot exist
     expect(await isProcessAlive(2_000_000_000, myStart!)).toBe(false);
+  });
+
+  describe('killGroup', () => {
+    it('does not throw when the PGID does not exist', async () => {
+      await expect(killGroup(2_000_000_000)).resolves.toBeUndefined();
+    });
+
+    it(
+      'kills a real process group and isProcessAlive becomes false',
+      async () => {
+        const child = spawnWrapper({
+          stateDir: sd,
+          runId: 'kg1',
+          kind: 'execute',
+          attemptId: 1,
+          logRel: 'agent.jsonl',
+          command: ['sh', '-c', 'sleep 30'],
+          cwd: sd,
+          env: { PATH: process.env.PATH ?? '' },
+        });
+        expect(typeof child.pid).toBe('number');
+
+        // Wait until the wrapper has written its pid file.
+        await until(async () => (await readPidFile(sd, 'kg1')) !== null, 8000);
+        const pidRec = await readPidFile(sd, 'kg1');
+        expect(pidRec).not.toBeNull();
+        const { pid, pidStart } = pidRec!;
+
+        await killGroup(pid);
+
+        // The group should die quickly; poll until liveness check confirms it.
+        await until(async () => !(await isProcessAlive(pid, pidStart)), 8000);
+        expect(await isProcessAlive(pid, pidStart)).toBe(false);
+      },
+      20_000,
+    );
   });
 });
