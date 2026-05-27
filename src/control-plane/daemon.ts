@@ -5,6 +5,8 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import type { Logger } from 'pino';
 
@@ -16,6 +18,12 @@ import { SingletonLock } from './lock.js';
 import { TaskStore } from './task-store.js';
 import { taskDir, type TaskRecord } from './task-record.js';
 import { renderTemplate, renderExecutePrompt } from './prompts.js';
+import { prepareWorkspace } from './intake.js';
+import { buildSettingsJson } from './settings-policy.js';
+import { createLinearReadClient, createLinearReadGateway, type LinearReadGateway } from './linear-read.js';
+import type { Phase } from './phase.js';
+
+const execFileAsync = promisify(execFile);
 
 /** Read review-fresh.md and decide if MISSING/PARTIAL gaps remain (spec §4 fork C). */
 export async function reviewHasGaps(stateDir: string): Promise<boolean> {
@@ -29,8 +37,32 @@ export async function reviewHasGaps(stateDir: string): Promise<boolean> {
   return /\b(MISSING|PARTIAL)\b/.test(raw);
 }
 
+/** agent/<lower-ticket>-<slug> from the title (slug: alnum→hyphen, trimmed, ≤40). */
+export function deriveBranch(ticket: string, title: string): string {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return slug.length > 0 ? `agent/${ticket.toLowerCase()}-${slug}` : `agent/${ticket.toLowerCase()}`;
+}
+
+/** Is this prep/execute dispatch a RETRY (source phase is the matching *_failed)? */
+export function isRetryDispatch(sourcePhase: Phase, to: Phase): boolean {
+  return (to === 'executing' && sourcePhase === 'execute_failed') ||
+         (to === 'prepping' && sourcePhase === 'prep_failed');
+}
+
+/** Overwrite the worktree's .claude/settings.json from the daemon's canonical
+ *  policy — runs before EVERY spawn so a prior agent cannot weaken it. Exported for the tamper test. */
+export async function writeSettings(worktree: string): Promise<string> {
+  const claudeDir = path.join(worktree, '.claude');
+  await fs.mkdir(claudeDir, { recursive: true });
+  const settingsPath = path.join(claudeDir, 'settings.json');
+  await fs.writeFile(settingsPath, JSON.stringify(buildSettingsJson(), null, 2), 'utf8');
+  return settingsPath;
+}
+
 export interface ControlPlaneHandle {
   engine: Engine;
+  store: TaskStore;
+  linearRead: LinearReadGateway;
   stop: () => Promise<void>;
 }
 
@@ -40,6 +72,8 @@ export interface BootControlPlaneDeps {
   now?: () => number;
   /** Tick cadence; default 2000ms. */
   tickIntervalMs?: number;
+  /** Injectable read gateway for tests / no-Linear boot; defaults to the real SDK gateway. */
+  linearRead?: LinearReadGateway;
 }
 
 /** The agent kinds dispatchForKind handles — exactly the config.prompts keys. */
@@ -70,6 +104,7 @@ async function dispatchForKind(
   pm: ProcessManager,
   store: TaskStore,
   config: ControlPlaneConfig,
+  linearRead: LinearReadGateway,
   args: DispatchArgs,
 ): Promise<void> {
   // The Engine only ever dispatches agent kinds through here. preview/teardown
@@ -82,16 +117,47 @@ async function dispatchForKind(
 
   const task = await store.get(args.ticket);
   if (!task) throw new Error(`dispatchForKind: unknown task ${args.ticket}`);
-  if (!task.worktree) throw new Error(`dispatchForKind: ${args.ticket} has no worktree (intake not run)`);
   const stateDir = taskDir(config.state_root, args.ticket);
-  const worktree = task.worktree;
-  const settingsPath = path.join(worktree, '.claude', 'settings.json');
+
+  // --- prep: run intake at the promotion (before the worktree guard) ---
+  let worktree = task.worktree;
+  let effectiveBranch = task.branch ?? ''; // the prep prompt's {{BRANCH}} must be the real branch, not '' on first prep
+  let intakeFields: ((r: TaskRecord) => void) | undefined;
+  if (kind === 'prep') {
+    const issue = await linearRead.fetchIssueByIdentifier(args.ticket);
+    if (!issue) throw new Error(`dispatchForKind: ${args.ticket} not found in Linear`);
+    const comments = await linearRead.listComments(issue.id);
+    const branch = task.branch ?? deriveBranch(args.ticket, task.title);
+    const result = await prepareWorkspace({
+      repo: config.workspace.repo,
+      stateRoot: config.state_root,
+      worktreeRoot: config.workspace.root,
+      ticket: args.ticket,
+      issue, comments,
+      baseBranch: config.workspace.base_branch,
+      aiProto: config.linear.ai_proto_path,
+      branch,
+      ...(task.baseSha ? { baseSha: task.baseSha } : {}),
+    });
+    worktree = result.worktree;
+    effectiveBranch = branch;
+    intakeFields = (r) => { r.branch = branch; r.worktree = result.worktree; r.baseSha = result.baseSha; };
+  } else if (kind === 'execute' && isRetryDispatch(task.phase, args.to)) {
+    // execute retry: clean-room reset to baseSha before re-running the executor.
+    if (!worktree || !task.baseSha) throw new Error(`dispatchForKind: execute retry needs worktree+baseSha for ${args.ticket}`);
+    await execFileAsync('git', ['-C', worktree, 'clean', '-ffdx']);
+    await execFileAsync('git', ['-C', worktree, 'reset', '--hard', task.baseSha]);
+  }
+  if (!worktree) throw new Error(`dispatchForKind: ${args.ticket} has no worktree (intake not run)`);
+
+  // canonical settings re-written before every spawn
+  const settingsPath = await writeSettings(worktree);
   const logRel = pm.logRelForKind(kind);
   const promptPath = config.prompts[kind];
 
   const ctx: Record<string, string> = {
     TICKET_ID: task.ticket,
-    BRANCH: task.branch ?? '',
+    BRANCH: effectiveBranch,
     WORKTREE: worktree,
     STATE_DIR: stateDir,
     AI_PROTO: config.linear.ai_proto_path,
@@ -110,7 +176,13 @@ async function dispatchForKind(
   } else {
     if (kind === 'gapfix') {
       const sid = task.currentRun?.sessionId ?? (await pm.captureSessionId(path.join(stateDir, 'agent.jsonl')));
-      if (sid) resumeSessionId = sid; // NO-SESSION fallback: fresh fixer (no resume)
+      if (sid) {
+        resumeSessionId = sid;
+      } else {
+        // NO-SESSION on (re)dispatch: drop any partial edits from the failed gapfix
+        // so the fresh fixer starts from the last commit, not dirty state.
+        await execFileAsync('git', ['-C', worktree, 'reset', '--hard', 'HEAD']);
+      }
     }
     prompt = renderTemplate(template, ctx);
   }
@@ -119,6 +191,7 @@ async function dispatchForKind(
   await pm.dispatchAgent({
     store, ticket: args.ticket, expectRev: args.expectRev, kind,
     logRel, command: argv, cwd: worktree, env: pm.buildAgentEnv(), to: args.to,
+    ...(intakeFields ? { extraMutate: intakeFields } : {}),
   });
 }
 
@@ -145,9 +218,12 @@ export async function bootControlPlane(
     ownerGen: deps.ownerGen,
   });
 
+  const linearRead =
+    deps.linearRead ?? createLinearReadGateway(createLinearReadClient(config.linear.read_token_env));
+
   const dispatcher: Dispatcher = {
     async dispatch(args) {
-      await dispatchForKind(pm, store, config, args);
+      await dispatchForKind(pm, store, config, linearRead, args);
     },
   };
 
@@ -192,6 +268,8 @@ export async function bootControlPlane(
 
   return {
     engine,
+    store,
+    linearRead,
     stop: async () => {
       stopped = true;
       if (timer !== null) clearTimeout(timer);
