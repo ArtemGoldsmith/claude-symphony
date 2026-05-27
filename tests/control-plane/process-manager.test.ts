@@ -121,3 +121,22 @@ describe('ProcessManager.dispatchAgent', () => {
     expect(rec.currentRun!.pid).toBeGreaterThan(0);
   });
 });
+
+describe('ProcessManager.dispatchAgent — retry flag + extraMutate', () => {
+  it('clears retryRequested and applies extraMutate in the same claim advance', async () => {
+    await store.create({ ticket: 'PIN-2', title: 'T', url: 'u' });
+    await store.advance('PIN-2', { expectRev: 0, to: 'prepping' });
+    await store.updateRun('PIN-2', 1, (r) => { r.retryRequested = true; });
+
+    const pm = new ProcessManager({ stateRoot: root, model: 'opus', readTokenEnv: 'LINEAR_READ_TOKEN', extraEnv: [], ownerGen: 'gen-1' });
+    const rec = await pm.dispatchAgent({
+      store, ticket: 'PIN-2', expectRev: 2, kind: 'prep', logRel: 'prep.jsonl',
+      command: ['sh', '-c', 'exit 0'], cwd: root, env: { PATH: process.env.PATH ?? '' },
+      extraMutate: (r) => { r.branch = 'agent/pin-2'; r.worktree = '/abs/wt'; r.baseSha = 'deadbeef'; },
+    });
+    expect(rec.retryRequested).toBe(false);
+    expect(rec.branch).toBe('agent/pin-2');
+    expect(rec.worktree).toBe('/abs/wt');
+    expect(rec.baseSha).toBe('deadbeef');
+  });
+});

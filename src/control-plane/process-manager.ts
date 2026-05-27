@@ -51,6 +51,8 @@ export interface DispatchAgentArgs {
   env: NodeJS.ProcessEnv;
   /** Optional phase to advance into as part of this dispatch (else stay). */
   to?: TaskRecord['phase'];
+  /** Extra fields to set in the SAME claim advance (e.g. intake branch/worktree/baseSha). */
+  extraMutate?: (record: TaskRecord) => void;
 }
 
 export class ProcessManager {
@@ -101,8 +103,10 @@ export class ProcessManager {
     };
     const claimMutate = (r: TaskRecord): void => {
       r.currentRun = claimed;
+      r.retryRequested = false; // a dispatch consumes any pending retry request (spec §17)
       if (args.kind === 'prep') r.attempts.prep = attemptId;
       else if (args.kind === 'execute') r.attempts.execute = attemptId;
+      if (args.extraMutate) args.extraMutate(r);
     };
     const afterClaim =
       args.to && args.to !== live.phase
