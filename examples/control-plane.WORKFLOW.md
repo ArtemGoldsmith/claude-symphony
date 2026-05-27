@@ -7,7 +7,7 @@
 # "Control-plane re-scope" section of SPEC-claude.md).
 #
 # Every value below is an OBVIOUS PLACEHOLDER. The public repo carries NO box
-# specifics — no Tailscale IP, no *.ts.net host, no real home path, no ntfy
+# specifics — no Tailscale IP, no Tailscale magic-DNS host, no real home path, no ntfy
 # topic, no ticket numbers. The real wiring lives outside the public repo.
 #
 # Env var NAMES are referenced here; the SECRET VALUES are supplied at runtime
