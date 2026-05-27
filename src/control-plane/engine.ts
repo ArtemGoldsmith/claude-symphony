@@ -119,30 +119,71 @@ export class Engine {
   async tick(): Promise<void> {
     const tasks = (await this.store.list()).sort((a, b) => a.createdAt - b.createdAt);
     for (const t of tasks) {
-      const target: { to: Phase; kind: RunRecord['kind'] } | null =
+      // Lane A/B: steady-state promotions.
+      const promo: { to: Phase; kind: RunRecord['kind'] } | null =
         t.phase === 'queued'
           ? { to: 'prepping', kind: 'prep' }
           : t.phase === 'approved'
             ? { to: 'executing', kind: 'execute' }
             : null;
-      if (!target) continue;
-      if (!this.slots.tryReserve()) break; // cap reached — stop promoting
-      try {
-        await this.dispatcher.dispatch({
-          store: this.store,
-          ticket: t.ticket,
-          expectRev: t.rev,
-          to: target.to,
-          kind: target.kind,
-        });
-      } catch (err) {
-        // codex HIGH #1: only hand the slot back if the CLAIM never landed (the
-        // task did not enter the ⊕ phase). If the claim succeeded but spawn/backfill
-        // threw, the task IS in the ⊕ phase holding this slot — releasing here would
-        // double-count when routeExit later fails it out of ⊕.
-        const after = await this.store.get(t.ticket);
-        if (!after || after.phase !== target.to) this.slots.release();
-        throw err;
+      if (promo) {
+        if (!this.slots.tryReserve()) break;
+        try {
+          await this.dispatcher.dispatch({ store: this.store, ticket: t.ticket, expectRev: t.rev, to: promo.to, kind: promo.kind });
+        } catch (err) {
+          // Release the slot ONLY if the claim never landed (task did not enter the
+          // ⊕ phase). If the claim landed but spawn/backfill threw, the task holds
+          // this slot and routeExit releases it later — releasing here double-counts.
+          const after = await this.store.get(t.ticket);
+          const landed = !!after && after.phase === promo.to;
+          if (!landed) {
+            this.slots.release();
+            // A pre-claim FIRST-PREP failure (intake/Linear/git) must be board-visible,
+            // not a silent every-tick retry. Surface queued→prep_failed.
+            if (after && promo.to === 'prepping') {
+              try {
+                await this.store.advance(t.ticket, { expectRev: after.rev, to: 'prep_failed', mutate: (r) => { r.failedFrom = 'prepping'; } });
+              } catch { /* rev moved on; next tick re-evaluates */ }
+              this.logWarn('first-prep intake failed → prep_failed', { ticket: t.ticket, error: (err as Error).message });
+              continue;
+            }
+          }
+          throw err;
+        }
+        continue;
+      }
+      // Lane C: granular retry. Only execute-chain failures are wired (Plan 3).
+      if (t.retryRequested && t.failedFrom && Engine.RETRY_KIND[t.failedFrom]) {
+        const target = t.failedFrom;
+        const kind = Engine.RETRY_KIND[target]!;
+        if (!this.slots.tryReserve()) break;
+        try {
+          if (target === 'executing' || target === 'prepping') {
+            // Reserving dispatch: the dispatcher runs clean-room/intake + claims the
+            // advance (clearing retryRequested in its mutate).
+            await this.dispatcher.dispatch({ store: this.store, ticket: t.ticket, expectRev: t.rev, to: target, kind });
+          } else {
+            // Chain continuation: advance into the chain phase (slot now held), clear
+            // the flag + null the run; ensureRunning dispatches the agent.
+            await this.store.advance(t.ticket, {
+              expectRev: t.rev, to: target,
+              mutate: (r) => { r.retryRequested = false; r.currentRun = null; },
+            });
+          }
+        } catch (err) {
+          // Same as the promo lane: release ONLY if the (re)entry did not land.
+          const after = await this.store.get(t.ticket);
+          const landed = !!after && after.phase === target;
+          if (!landed) {
+            this.slots.release();
+            // Clear the flag at the rev WE read (not latest), so a concurrently re-set
+            // flag (newer rev) is not clobbered. Deterministic failure → clears → no loop.
+            try { await this.store.updateRun(t.ticket, t.rev, (r) => { r.retryRequested = false; }); } catch { /* rev moved on; leave it */ }
+          }
+          this.logWarn('retry lane error', { ticket: t.ticket, landed, error: (err as Error).message });
+          continue;
+        }
+        continue;
       }
     }
     await this.routeFinishedRuns();
@@ -157,6 +198,15 @@ export class Engine {
    * entry here (its agent is preview-up, Plan 4).
    */
   private static readonly CHAIN_AGENT: Partial<Record<Phase, RunRecord['kind']>> = {
+    reviewing: 'review',
+    gapfixing: 'gapfix',
+    closing: 'closeout',
+  };
+
+  /** The agent kind to (re)dispatch when re-entering each phase on retry. */
+  private static readonly RETRY_KIND: Partial<Record<Phase, RunRecord['kind']>> = {
+    prepping: 'prep',
+    executing: 'execute',
     reviewing: 'review',
     gapfixing: 'gapfix',
     closing: 'closeout',
