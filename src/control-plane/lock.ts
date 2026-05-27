@@ -15,6 +15,8 @@ export class LockHeldError extends Error {
 export interface SingletonLockOptions {
   /** Lock is considered stale (holder dead, stopped refreshing) after this many ms. */
   staleMs?: number;
+  /** Invoked if the held lock is compromised (stolen by another instance). */
+  onCompromised?: (err: Error) => void;
 }
 
 export class SingletonLock {
@@ -34,6 +36,7 @@ export class SingletonLock {
       this.release_ = await lockfile.lock(this.stateRoot, {
         stale: this.opts.staleMs ?? 30_000,
         realpath: false,
+        onCompromised: this.opts.onCompromised ?? ((err) => { throw err; }),
       });
     } catch (err) {
       if ((err as { code?: string }).code === 'ELOCKED') throw new LockHeldError();
