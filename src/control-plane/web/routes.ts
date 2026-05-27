@@ -11,7 +11,7 @@ import type { Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 import { isTerminalPhase } from '../phase.js';
-import { StaleRevError, TaskExistsError, type TaskStore } from '../task-store.js';
+import { StaleRevError, TaskExistsError, UnknownTaskError, type TaskStore } from '../task-store.js';
 import { taskDir } from '../task-record.js';
 import type { LinearReadGateway } from '../linear-read.js';
 import { renderBoard, renderDetail } from './views.js';
@@ -39,6 +39,7 @@ function formRev(body: Record<string, unknown>): number {
 function statusFor(err: unknown): ContentfulStatusCode {
   if (err instanceof StaleRevError) return 409;
   if (err instanceof TaskExistsError) return 409;
+  if (err instanceof UnknownTaskError) return 409;
   return 400;
 }
 
@@ -63,16 +64,20 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
     const ticket = typeof body.ticket === 'string' ? body.ticket.trim().toUpperCase() : '';
     if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(ticket)) return c.text('bad ticket', 400);
 
-    const existing = await store.get(ticket);
-    if (existing) {
-      if (!isTerminalPhase(existing.phase)) return c.text('already tracked', 409);
-      await store.archive(ticket);
-    }
+    // Fetch FIRST: a Linear miss must 404 WITHOUT having archived a prior terminal task.
     const issue = await linearRead.fetchIssueByIdentifier(ticket);
     if (!issue) return c.text('ticket not found', 404);
+
     try {
+      const existing = await store.get(ticket);
+      if (existing) {
+        if (!isTerminalPhase(existing.phase)) return c.text('already tracked', 409);
+        await store.archive(ticket); // terminal re-add (archive + create in ONE try)
+      }
       await store.create({ ticket, title: issue.title, url: issue.url ?? '' });
     } catch (err) {
+      // Concurrent re-add: a racing request may have already archived (UnknownTaskError)
+      // or created (TaskExistsError) the ticket → 409, never a 500.
       return c.text('create failed', statusFor(err));
     }
     return c.redirect('/', 303);

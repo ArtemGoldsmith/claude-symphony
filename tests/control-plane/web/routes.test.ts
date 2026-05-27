@@ -63,6 +63,15 @@ describe('POST /tasks', () => {
     expect(res.status).toBe(303);
     expect((await store.get('PIN-1'))!.phase).toBe('queued');
   });
+  it('a Linear miss does NOT archive the prior terminal task', async () => {
+    await store.create({ ticket: 'PIN-3', title: 'T', url: 'u' });
+    await store.advance('PIN-3', { expectRev: 0, to: 'prep_failed', mutate: (r) => { r.failedFrom = 'prepping'; } });
+    await store.advance('PIN-3', { expectRev: 1, to: 'abandoned', mutate: (r) => { r.terminalReason = 'abandoned'; } });
+    const res = await app.request('/tasks', form({ ticket: 'PIN-3' })); // PIN-3 unknown to Linear
+    expect(res.status).toBe(404);
+    // still present (not archived) — the abandoned task remains gettable
+    expect((await store.get('PIN-3'))!.phase).toBe('abandoned');
+  });
 });
 
 describe('answers + approve guards', () => {
