@@ -46,4 +46,30 @@ describe('parseControlPlaneConfig', () => {
   it('rejects a wildcard web.bind_host (spec §9)', () => {
     expect(() => parseControlPlaneConfig({ ...MIN, web: { auth_token_env: 'T', bind_host: '0.0.0.0' } })).toThrow();
   });
+
+  it('defaults agent.model to opus and agent.extra_env to []', () => {
+    const c = parseControlPlaneConfig(MIN);
+    expect(c.agent.model).toBe('opus');
+    expect(c.agent.extra_env).toEqual([]);
+  });
+
+  it('honours agent.model + agent.extra_env overrides (box build essentials)', () => {
+    const c = parseControlPlaneConfig({
+      ...MIN,
+      agent: { max_concurrent_agents: 2, model: 'sonnet', extra_env: ['DOCKER_HOST', 'GOPATH'] },
+    });
+    expect(c.agent.model).toBe('sonnet');
+    expect(c.agent.extra_env).toEqual(['DOCKER_HOST', 'GOPATH']);
+  });
+
+  it('rejects read_token_env = LINEAR_API_KEY (would leak the full-write key)', () => {
+    expect(() =>
+      parseControlPlaneConfig({ ...MIN, linear: { read_token_env: 'LINEAR_API_KEY', ai_proto_path: '/p' } }),
+    ).toThrow(/READ-scoped/);
+  });
+  it('rejects a secret-looking extra_env entry', () => {
+    expect(() =>
+      parseControlPlaneConfig({ ...MIN, agent: { extra_env: ['GIT_PUSH_TOKEN'] } }),
+    ).toThrow(/looks like a secret/);
+  });
 });

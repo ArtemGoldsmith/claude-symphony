@@ -16,8 +16,14 @@ export const ControlPlaneConfigSchema = z
     }),
     agent: z
       .object({
-        // Lowered from the daemon's 5 (schema.ts:59) — RAM-bound on a 16GB box (spec §10/§13).
+        // Lowered from the daemon's 5 — RAM-bound on a 16GB box (spec §10/§13).
         max_concurrent_agents: z.number().int().positive().default(2),
+        // Model passed to `claude -p --model`. Spec §6 pins opus; configurable.
+        model: NonEmpty.default('opus'),
+        // Extra env var NAMES forwarded to the spawned agent beyond the minimal
+        // allowlist (spec §6/§11). For box build essentials only (e.g. DOCKER_HOST,
+        // GOPATH) — NEVER secrets; the daemon's bearer/push creds are never listed.
+        extra_env: z.array(NonEmpty).default([]),
       })
       .default({}),
     web: z.object({
@@ -46,7 +52,25 @@ export const ControlPlaneConfigSchema = z
       ai_proto_path: NonEmpty,
     }),
   })
-  .strip(); // Unknown keys are dropped (forward-compat).
+  .strip() // Unknown keys are dropped (forward-compat).
+  .superRefine((cfg, ctx) => {
+    const SECRETISH = /(_KEY|_SECRET|_TOKEN|PASSWORD|BEARER)$/i;
+    // The read-scoped Linear token is the ONLY token allowed into the agent env.
+    if (cfg.linear.read_token_env === 'LINEAR_API_KEY') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['linear', 'read_token_env'],
+        message: 'read_token_env must be a READ-scoped token env, never LINEAR_API_KEY (full write)' });
+    }
+    if (cfg.linear.read_token_env === cfg.web.auth_token_env) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['linear', 'read_token_env'],
+        message: 'read_token_env must not equal the board auth token env' });
+    }
+    for (const name of cfg.agent.extra_env) {
+      if (SECRETISH.test(name) || name === cfg.web.auth_token_env || name === 'LINEAR_API_KEY') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['agent', 'extra_env'],
+          message: `extra_env entry "${name}" looks like a secret; only the read-scoped Linear token may reach the agent` });
+      }
+    }
+  });
 
 export type ControlPlaneConfig = z.infer<typeof ControlPlaneConfigSchema>;
 
