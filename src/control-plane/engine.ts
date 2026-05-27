@@ -153,7 +153,8 @@ export class Engine {
         continue;
       }
       // Lane C: granular retry. Only execute-chain failures are wired (Plan 3).
-      if (t.retryRequested && t.failedFrom && Engine.RETRY_KIND[t.failedFrom]) {
+      // only re-enter from a failure phase — never double-reserve from a slot phase
+      if (t.phase.endsWith('_failed') && t.retryRequested && t.failedFrom && Engine.RETRY_KIND[t.failedFrom]) {
         const target = t.failedFrom;
         const kind = Engine.RETRY_KIND[target]!;
         if (!this.slots.tryReserve()) break;

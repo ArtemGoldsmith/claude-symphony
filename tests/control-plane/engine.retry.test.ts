@@ -130,4 +130,16 @@ describe('Engine retry lane', () => {
     expect(calls).toHaveLength(0);
     expect(slots.active).toBe(0);
   });
+
+  it('Lane C catch: a deterministic retry dispatch failure releases the slot and clears the flag (no loop)', async () => {
+    await toExecuteFailed('PIN-6', 'executing');
+    await store.updateRun('PIN-6', (await store.get('PIN-6'))!.rev, (r) => { r.retryRequested = true; });
+    const failing: Dispatcher = { async dispatch() { throw new Error('clean-room boom'); } };
+    const slots = new SlotCounter(2);
+    await engineWith(failing, slots).tick(); // must NOT throw
+    const t = (await store.get('PIN-6'))!;
+    expect(t.phase).toBe('execute_failed'); // unchanged (re-entry did not land)
+    expect(t.retryRequested).toBe(false);   // flag cleared → no infinite retry loop
+    expect(slots.active).toBe(0);            // slot released
+  });
 });
