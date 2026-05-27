@@ -11,6 +11,9 @@ export const ControlPlaneConfigSchema = z
   .object({
     state_root: NonEmpty,
     workspace: z.object({
+      // Shared repo root: where `git worktree add` runs and .git/hooks lives.
+      repo: NonEmpty,
+      // Per-task worktrees land under <root>/<TEAM-NNN>/.
       root: NonEmpty,
       base_branch: NonEmpty.default('origin/development'),
     }),

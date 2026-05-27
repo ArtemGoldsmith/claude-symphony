@@ -5,7 +5,7 @@ import { parseControlPlaneConfig } from '../../src/control-plane/config.js';
 
 const MIN = {
   state_root: '~/.local/state/symphony',
-  workspace: { root: '/abs/worktrees', base_branch: 'origin/development' },
+  workspace: { repo: '/abs/repo', root: '/abs/worktrees', base_branch: 'origin/development' },
   web: { auth_token_env: 'SYMPHONY_BOARD_TOKEN' },
   preview: { up_script: '/abs/preview-up.sh', down_script: '/abs/preview-down-compute.sh' },
   prompts: {
@@ -60,6 +60,13 @@ describe('parseControlPlaneConfig', () => {
     });
     expect(c.agent.model).toBe('sonnet');
     expect(c.agent.extra_env).toEqual(['DOCKER_HOST', 'GOPATH']);
+  });
+
+  it('requires workspace.repo (the shared repo root for worktree add)', () => {
+    const c = parseControlPlaneConfig(MIN);
+    expect(c.workspace.repo).toBe('/abs/repo');
+    const { repo: _omit, ...noRepo } = MIN.workspace as Record<string, unknown>;
+    expect(() => parseControlPlaneConfig({ ...MIN, workspace: noRepo })).toThrow();
   });
 
   it('rejects read_token_env = LINEAR_API_KEY (would leak the full-write key)', () => {

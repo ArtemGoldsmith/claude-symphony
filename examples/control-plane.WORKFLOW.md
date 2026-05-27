@@ -17,6 +17,8 @@
 state_root: /abs/path/to/control-plane-state
 
 workspace:
+  # Shared repo root: where `git worktree add` runs and .git/hooks lives.
+  repo: /abs/path/to/repo
   # Per-task worktrees land under <root>/<TEAM-NNN>/.
   root: /abs/path/to/worktrees
   # Branch the worktree is forked from. Feature branches not merged here are
