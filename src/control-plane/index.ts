@@ -15,3 +15,8 @@ export * from './intake.js';
 export * from './routing.js';
 export * from './engine.js';
 export * from './daemon.js';
+export * from './config-loader.js';
+export * from './web/auth.js';
+export * from './web/views.js';
+export * from './web/routes.js';
+export * from './web/server.js';

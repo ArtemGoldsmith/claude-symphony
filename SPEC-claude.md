@@ -36,6 +36,20 @@ The sections below (§A–§G) document the agent-runner and front-matter deviat
 
 ---
 
+## Control-plane web layer
+
+The control plane's UI is a **Hono** app serving **server-rendered HTML** with an **htmx** board — no client-side framework, no JSON-only API consumed by a SPA. The board reflects task lifecycle state; htmx swaps drive the gate interactions.
+
+**Single global auth gate.** ONE bearer-auth middleware runs **before every route** (`web/auth.ts`). It compares the configured board token in **constant time**, is **rate-limited** on repeated failures, and issues an **HttpOnly** session cookie after a successful login so subsequent requests need not resend the bearer. The server **binds to a non-wildcard host** (a loopback or private address from config) — never `0.0.0.0`. The board bearer (`web.auth_token_env`) is distinct from the read-scoped Linear token and never reaches an agent.
+
+**API surface (SPEC.md §9 endpoints).** The routes (`web/routes.ts`) expose the lifecycle-control endpoints: `POST /tasks`, `GET /tasks` and `GET /tasks/:id`, plus the gate actions — `answers`, `approve`, `reject`, `ack`, `approve-preview`, `request-changes`, `teardown`, and `retry`. Each mutating endpoint is a **phase + revision compare-and-swap through `TaskStore`**: it reads the task's current phase and rev, attempts the transition, and rejects on a stale rev (lost-update protection). **The web layer never spawns a process and never enters a ⊕ (agent-running) phase** — it only records the requested transition; the Engine is the sole actor that spawns agents and advances ⊕ phases. **Intake runs at the `queued → prepping` promotion**, turning the approved item into a prepped task. **`/retry` is granular**: rather than forcing a lifecycle transition, it sets a **transition-free flag** on the task record that the Engine observes and acts on, so a retry does not itself move the task between phases.
+
+**Config + host.** Control-plane config is loaded from a `WORKFLOW.md`-style file via `config-loader.ts` (`loadControlPlaneConfig`), reusing the front-matter contract. The web server is **co-hosted with the daemon** through the `bin/control-plane.ts` entry point: one process holds the single-instance lock, runs the Engine tick loop, and serves the board.
+
+No box-specific host, address, ticket id, or topic appears here; deployment specifics stay outside the public repo and the `scripts/check-public-invariants.sh` guard enforces it. Ticket placeholders use the `TEAM-NNN` form.
+
+---
+
 ## A. Agent Runner — replaces SPEC.md §10 wholesale
 
 `SPEC.md` §10 is written against the [Codex app-server protocol](https://developers.openai.com/codex/app-server/). `claude-symphony` does not run a Codex app-server. The Agent Runner instead drives the [Anthropic Claude Agent SDK](https://docs.anthropic.com/) (`@anthropic-ai/claude-agent-sdk`) directly from TypeScript.

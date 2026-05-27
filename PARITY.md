@@ -221,7 +221,13 @@ New modules introduced by the re-scope. Lifecycle: `queued → prepping → awai
 | Settings deny policy | 🟡 Partial | `src/control-plane/settings-policy.ts` — Claude Code settings deny list applied to each agent — defense-in-depth layer 1 |
 | Hardened pre-push | 🟡 Partial | `src/control-plane/pre-push.ts` — pre-push hook restricting the agent to pushing only its own task branch — layer 2 |
 | Dispatcher engine | 🟡 Partial | `src/control-plane/{config,task-store,slots,lock,phase,engine,routing}.ts` — config schema, single-daemon lock, synchronous slot counter, boot scan/snapshot index, and the lifecycle transition engine |
-| Daemon | 🟡 Partial | `src/control-plane/daemon.ts` — single-instance (proper-lockfile) host; web board binds to a Tailscale IP / loopback (never a wildcard); env allowlist is layer 3; HTTP surface in progress |
+| Daemon | 🟡 Partial | `src/control-plane/daemon.ts` — single-instance (proper-lockfile) host; web board binds to a private address / loopback (never a wildcard); env allowlist is layer 3; intake runs at the `queued → prepping` promotion |
+| Web auth gate | 🟡 Partial | `src/control-plane/web/auth.ts` — ONE global bearer middleware before all routes: constant-time compare, rate-limited, HttpOnly session cookie |
+| Web API (§9 endpoints) | 🟡 Partial | `src/control-plane/web/routes.ts` — POST/GET `/tasks(/:id)` + gate actions (answers, approve, reject, ack, approve-preview, request-changes, teardown, retry); each a phase+rev CAS through `TaskStore`; never spawns a process / never enters a ⊕ phase; `/retry` sets a transition-free flag the Engine acts on |
+| Board / detail render | 🟡 Partial | `src/control-plane/web/views.ts` — server-rendered HTML + htmx board (`renderBoard` / `renderDetail` / `renderTaskCard`); no client framework |
+| App / server | 🟡 Partial | `src/control-plane/web/server.ts` — Hono `createApp` / `startWebServer`; binds to a non-wildcard host from config |
+| Config loader | 🟡 Partial | `src/control-plane/config-loader.ts` — `loadControlPlaneConfig` reads a `WORKFLOW.md`-style file via the front-matter contract |
+| Control-plane bin | 🟡 Partial | `bin/control-plane.ts` — co-hosts the daemon (lock + Engine tick loop) and the web board in one process |
 | Public-invariant grep guard | ✅ | `scripts/check-public-invariants.sh` + `tests/control-plane/public-invariants.test.ts` — fails on box/Pinley specifics or secrets in tracked files (§11/§13) |
 
 ---
