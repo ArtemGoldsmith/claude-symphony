@@ -2,6 +2,9 @@
 // Spec §5 store + §12 integrity: one writer, per-task FIFO mutation queue,
 // read→CAS(rev)→atomic-write. scan()/snapshot live in Task 4 (appended).
 
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
 import {
   type TaskRecord,
   newTaskRecord,
@@ -9,6 +12,18 @@ import {
   writeTaskRecord,
 } from './task-record.js';
 import { type Phase, assertTransition } from './phase.js';
+
+export const SNAPSHOT_FILENAME = '.symphony-index.json';
+
+/** Roll-up index for fast board first-paint (spec §5). task.json stays source of truth. */
+export interface SnapshotIndex {
+  version: 1;
+  savedAt: number;
+  tickets: string[];
+}
+
+/** PIN-NNN directory name matcher (mirrors orchestrator recoverFromDisk:271). */
+const TICKET_DIR = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 
 export class StaleRevError extends Error {
   constructor(ticket: string, expected: number, actual: number) {
@@ -128,5 +143,71 @@ export class TaskStore {
       this.cache.set(ticket, next);
       return structuredClone(next);
     });
+  }
+
+  // Boot seed: load every $STATE_ROOT/PIN-NNN/task.json into the cache.
+  // (line comment, not JSDoc — a */ glob inside a block comment would close it early)
+  async scan(): Promise<TaskRecord[]> {
+    let entries: Array<{ name: string; isDirectory: () => boolean }>;
+    try {
+      entries = await fs.readdir(this.stateRoot, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
+    const tickets = entries
+      .filter((e) => e.isDirectory() && TICKET_DIR.test(e.name))
+      .map((e) => e.name)
+      .sort();
+    const loaded: TaskRecord[] = [];
+    for (const ticket of tickets) {
+      const r = await readTaskRecord(this.stateRoot, ticket);
+      if (r) {
+        this.cache.set(ticket, r);
+        loaded.push(structuredClone(r));
+      }
+    }
+    return loaded;
+  }
+
+  async list(): Promise<TaskRecord[]> {
+    return [...this.cache.values()].map((r) => structuredClone(r)).sort((a, b) =>
+      a.ticket.localeCompare(b.ticket),
+    );
+  }
+
+  /** Atomically write the roll-up index (tmp + rename). */
+  async saveSnapshot(): Promise<void> {
+    const index: SnapshotIndex = {
+      version: 1,
+      savedAt: this.now(),
+      tickets: [...this.cache.keys()].sort(),
+    };
+    await fs.mkdir(this.stateRoot, { recursive: true });
+    const file = path.join(this.stateRoot, SNAPSHOT_FILENAME);
+    const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(index, null, 2), 'utf8');
+    await fs.rename(tmp, file);
+  }
+
+  /** Read the index; null if missing or malformed (spec §12 tolerant). */
+  async loadSnapshot(): Promise<SnapshotIndex | null> {
+    const file = path.join(this.stateRoot, SNAPSHOT_FILENAME);
+    let raw: string;
+    try {
+      raw = await fs.readFile(file, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.version === 1 && Array.isArray(parsed.tickets)) {
+        return parsed as SnapshotIndex;
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 }
