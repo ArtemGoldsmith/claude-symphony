@@ -98,4 +98,26 @@ describe('ProcessManager.dispatchAgent', () => {
       }
     }
   });
+
+  it('advances the phase (queued → prepping) as part of dispatch and claims the run', async () => {
+    await store.create({ ticket: 'PIN-2', title: 'T', url: 'u' });
+
+    const pm = new ProcessManager({ stateRoot: root, model: 'opus', readTokenEnv: 'LINEAR_READ_TOKEN', extraEnv: [], ownerGen: 'gen-1' });
+    const rec = await pm.dispatchAgent({
+      store,
+      ticket: 'PIN-2',
+      expectRev: 0, // queued at rev 0
+      kind: 'prep',
+      to: 'prepping', // advance branch (not updateRun)
+      logRel: 'agent.jsonl',
+      command: ['sh', '-c', 'exit 0'],
+      cwd: root,
+      env: { PATH: process.env.PATH ?? '' },
+    });
+    expect(rec.phase).toBe('prepping');
+    expect(rec.currentRun).not.toBeNull();
+    expect(rec.currentRun!.kind).toBe('prep');
+    expect(rec.currentRun!.ownerGen).toBe('gen-1');
+    expect(rec.currentRun!.pid).toBeGreaterThan(0);
+  });
 });

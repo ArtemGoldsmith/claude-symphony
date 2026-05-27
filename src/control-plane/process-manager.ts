@@ -104,10 +104,11 @@ export class ProcessManager {
 
     try {
       return await args.store.updateRun(args.ticket, afterClaim.rev, (r) => {
-        if (r.currentRun && r.currentRun.runId === runId) {
-          r.currentRun.pid = pid;
-          r.currentRun.pidStart = pidStart;
+        if (!r.currentRun || r.currentRun.runId !== runId) {
+          throw new Error(`dispatchAgent: currentRun changed under backfill for ${args.ticket}`);
         }
+        r.currentRun.pid = pid;
+        r.currentRun.pidStart = pidStart;
       });
     } catch (err) {
       if (pid !== null) await killGroup(pid, 'SIGTERM');

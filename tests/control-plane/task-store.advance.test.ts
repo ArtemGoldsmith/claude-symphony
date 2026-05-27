@@ -6,6 +6,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 
 import { TaskStore, StaleRevError, TaskExistsError } from '../../src/control-plane/task-store.js';
 import { TransitionError } from '../../src/control-plane/phase.js';
+import { readTaskRecord, writeTaskRecord } from '../../src/control-plane/task-record.js';
 
 let root: string;
 let store: TaskStore;
@@ -70,6 +71,22 @@ describe('TaskStore.advance (CAS + queue)', () => {
     expect(ok).toHaveLength(1);
     expect(bad).toHaveLength(1);
     expect((await store.get('PIN-4'))!.rev).toBe(1);
+  });
+
+  it('adopts a higher-rev disk record (liveForCas cross-generation reconcile) and rejects a stale cache-rev advance', async () => {
+    // Cache rev is 1 after create+advance.
+    await store.create({ ticket: 'PIN-6', title: 'F', url: 'u' });
+    await store.advance('PIN-6', { expectRev: 0, to: 'prepping' });
+
+    // Out-of-band: a different generation writes a HIGHER-rev record straight to disk.
+    const onDisk = await readTaskRecord(root, 'PIN-6');
+    onDisk!.rev = 5;
+    await writeTaskRecord(root, onDisk!);
+
+    // A CAS with the STALE cache rev (1) must reject — liveForCas adopts disk rev 5.
+    await expect(store.advance('PIN-6', { expectRev: 1, to: 'awaiting_approval' })).rejects.toThrow(
+      StaleRevError,
+    );
   });
 
   it('applies a mutator under the same CAS so field writes are atomic with the phase change', async () => {
