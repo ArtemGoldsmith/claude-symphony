@@ -1,4 +1,4 @@
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -92,5 +92,77 @@ describe('detectCompletion', () => {
       pid: 2_000_000_000, pidStart: 'x', spawnedAt: 0, graceSeconds: 30, now: 100,
     });
     expect(res.status).toBe('crashed');
+  });
+
+  it('rejects a stale artifact (mtime < spawnedAt) → crashed', async () => {
+    const spawnedAt = Math.floor(Date.now() / 1000);
+    const file = path.join(dir, 'open-questions.json');
+    await writeFile(file, '{"rev":1,"items":[]}', 'utf8');
+    const pastDate = new Date((spawnedAt - 100) * 1000);
+    await utimes(file, pastDate, pastDate);
+    const res = await pm.detectCompletion({
+      stateDir: dir, runId: 'rstale', kind: 'prep', logRel: 'prep.jsonl',
+      pid: 2_000_000_000, pidStart: 'x', spawnedAt, graceSeconds: 30, now: spawnedAt + 100,
+    });
+    expect(res.status).toBe('crashed');
+  });
+
+  it('uses hasResultEvent (fresh log result event) → completed-no-exitcode', async () => {
+    await writeFile(
+      path.join(dir, 'agent.jsonl'),
+      [
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
+        JSON.stringify({ type: 'result' }),
+      ].join('\n'),
+      'utf8',
+    );
+    const res = await pm.detectCompletion({
+      stateDir: dir, runId: 'rresult', kind: 'execute', logRel: 'agent.jsonl',
+      pid: 2_000_000_000, pidStart: 'x', spawnedAt: 0, graceSeconds: 30, now: 100,
+    });
+    expect(res.status).toBe('completed-no-exitcode');
+  });
+
+  it('does NOT use a stale log (mtime < spawnedAt) as evidence → crashed', async () => {
+    const spawnedAt = Math.floor(Date.now() / 1000);
+    const log = path.join(dir, 'agent.jsonl');
+    await writeFile(log, JSON.stringify({ type: 'result' }), 'utf8');
+    const pastDate = new Date((spawnedAt - 100) * 1000);
+    await utimes(log, pastDate, pastDate);
+    const res = await pm.detectCompletion({
+      stateDir: dir, runId: 'rstalelog', kind: 'closeout', logRel: 'agent.jsonl',
+      pid: 2_000_000_000, pidStart: 'x', spawnedAt, graceSeconds: 30, now: spawnedAt + 100,
+    });
+    expect(res.status).toBe('crashed');
+  });
+
+  it('recovers liveness from the pid file when pid/pidStart are null', async () => {
+    const child = spawn('sh', ['-c', 'sleep 5'], { stdio: 'ignore' });
+    try {
+      const token = await processStartTime(child.pid!);
+      await writeFile(path.join(dir, 'rpidfile.pid'), `${child.pid} ${token}`, 'utf8');
+      const res = await pm.detectCompletion({
+        stateDir: dir, runId: 'rpidfile', kind: 'prep', logRel: 'prep.jsonl',
+        pid: null, pidStart: null, spawnedAt: 0, graceSeconds: 30, now: 100,
+      });
+      expect(res.status).toBe('running');
+    } finally {
+      child.kill('SIGKILL');
+    }
+  });
+});
+
+describe('logRelForKind + abort', () => {
+  it('maps each kind to its log filename, defaulting to run.jsonl', () => {
+    expect(pm.logRelForKind('prep')).toBe('prep.jsonl');
+    expect(pm.logRelForKind('execute')).toBe('agent.jsonl');
+    expect(pm.logRelForKind('review')).toBe('review.jsonl');
+    expect(pm.logRelForKind('gapfix')).toBe('gapfix.jsonl');
+    expect(pm.logRelForKind('closeout')).toBe('closeout.jsonl');
+    expect(pm.logRelForKind('preview')).toBe('run.jsonl');
+  });
+
+  it('abort resolves without throwing for a non-existent group', async () => {
+    await expect(pm.abort(2_000_000_000)).resolves.toBeUndefined();
   });
 });
