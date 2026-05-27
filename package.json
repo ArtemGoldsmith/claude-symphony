@@ -18,7 +18,8 @@
   },
   "packageManager": "pnpm@10.33.2",
   "bin": {
-    "claude-symphony": "./dist/bin/claude-symphony.js"
+    "claude-symphony": "./dist/bin/claude-symphony.js",
+    "claude-symphony-control-plane": "./dist/bin/control-plane.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -33,6 +34,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx bin/claude-symphony.ts",
+    "dev:control-plane": "tsx bin/control-plane.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
