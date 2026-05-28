@@ -44,9 +44,11 @@ web:
   auth_token_env: SYMPHONY_BOARD_TOKEN
 
 preview:
-  # Scripts that bring a per-task preview environment up/down.
   up_script: /abs/path/to/preview-up.sh
-  down_script: /abs/path/to/preview-down.sh
+  down_script: /abs/path/to/preview-down-compute.sh
+  timeout_seconds: 1800
+  # Extra env var NAMES (not values) for the preview scripts — e.g. DOCKER_HOST. Never secrets.
+  extra_env: []
 
 prompts:
   # Paths to the prompt templates for each lifecycle stage.

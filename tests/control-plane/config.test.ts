@@ -79,4 +79,20 @@ describe('parseControlPlaneConfig', () => {
       parseControlPlaneConfig({ ...MIN, agent: { extra_env: ['GIT_PUSH_TOKEN'] } }),
     ).toThrow(/looks like a secret/);
   });
+
+  it('preview.timeout_seconds defaults to 1800 and preview.extra_env to []', () => {
+    const c = parseControlPlaneConfig(MIN);
+    expect(c.preview.timeout_seconds).toBe(1800);
+    expect(c.preview.extra_env).toEqual([]);
+  });
+
+  it('preview.extra_env rejects secret-looking names', () => {
+    const bad = { ...MIN, preview: { ...MIN.preview, extra_env: ['DOCKER_HOST', 'GH_TOKEN'] } };
+    expect(() => parseControlPlaneConfig(bad)).toThrow(/secret/i);
+  });
+
+  it('preview.extra_env accepts benign build env names', () => {
+    const ok = { ...MIN, preview: { ...MIN.preview, extra_env: ['DOCKER_HOST', 'COLIMA_HOME'] } };
+    expect(parseControlPlaneConfig(ok).preview.extra_env).toEqual(['DOCKER_HOST', 'COLIMA_HOME']);
+  });
 });

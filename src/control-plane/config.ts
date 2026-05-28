@@ -42,6 +42,12 @@ export const ControlPlaneConfigSchema = z
     preview: z.object({
       up_script: NonEmpty,
       down_script: NonEmpty,
+      // Wall-clock ceiling for a preview/teardown run (the docker build is otherwise
+      // unbounded). probeExit group-kills past this → preview_failed/teardown_failed (§8.1).
+      timeout_seconds: z.number().int().positive().default(1800),
+      // Extra env var NAMES forwarded to the preview SCRIPTS beyond the minimal
+      // allowlist (e.g. DOCKER_HOST). NEVER secrets, NEVER the Linear token (§8.1/§8.3).
+      extra_env: z.array(NonEmpty).default([]),
     }),
     prompts: z.object({
       prep: NonEmpty,
@@ -71,6 +77,12 @@ export const ControlPlaneConfigSchema = z
       if (SECRETISH.test(name) || name === cfg.web.auth_token_env || name === 'LINEAR_API_KEY') {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['agent', 'extra_env'],
           message: `extra_env entry "${name}" looks like a secret; only the read-scoped Linear token may reach the agent` });
+      }
+    }
+    for (const name of cfg.preview.extra_env) {
+      if (SECRETISH.test(name) || name === cfg.web.auth_token_env || name === 'LINEAR_API_KEY' || name === cfg.linear.read_token_env) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['preview', 'extra_env'],
+          message: `preview.extra_env entry "${name}" looks like a secret; preview scripts source their own secrets file` });
       }
     }
   });
