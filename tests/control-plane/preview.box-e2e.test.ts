@@ -20,7 +20,13 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 describe('preview lifecycle via the Engine (box-only)', () => {
   (BOX ? it : it.skip)('closeout-state → preview-up → ready → approve → teardown → done', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'cp-box-'));
+    // preview-lib.sh resolves STATE_ROOT = ${XDG_STATE_HOME:-$HOME/.local/state}/symphony.
+    // For the engine's stateRoot to align with where the script writes preview.json,
+    // we set XDG_STATE_HOME=<tmpdir> in the script env and use <tmpdir>/symphony as
+    // the engine's stateRoot — they then agree on $STATE_DIR/preview.json.
+    const tmpRoot = await mkdtemp(path.join(tmpdir(), 'cp-box-'));
+    const root = path.join(tmpRoot, 'symphony');
+    await (await import('node:fs/promises')).mkdir(root, { recursive: true });
     const upScript = process.env.SYMPHONY_PREVIEW_UP ?? `${process.env.HOME}/symphony-preview/preview-up.sh`;
     const downScript = process.env.SYMPHONY_PREVIEW_DOWN ?? `${process.env.HOME}/symphony-preview/preview-down-compute.sh`;
     const worktree = process.env.SYMPHONY_BOX_WORKTREE!; // committed, buildable
@@ -36,11 +42,12 @@ describe('preview lifecycle via the Engine (box-only)', () => {
     const dispatcher: Dispatcher = {
       async dispatch(args) {
         const task = (await store.get(args.ticket))!;
-        const env = pm.buildScriptEnv(['DOCKER_HOST']);
+        // Inject XDG_STATE_HOME so preview-lib.sh's STATE_ROOT = tmpRoot/symphony = engine's stateRoot.
+        const env: NodeJS.ProcessEnv = { ...pm.buildScriptEnv(['DOCKER_HOST']), XDG_STATE_HOME: tmpRoot };
         if (args.kind === 'preview') {
           await pm.dispatchAgent({ store, ticket: args.ticket, expectRev: args.expectRev, kind: 'preview', logRel: pm.logRelForKind('preview'), command: [upScript, args.ticket, task.worktree!], cwd: task.worktree!, env, to: args.to });
         } else if (args.kind === 'teardown') {
-          await pm.dispatchAgent({ store, ticket: args.ticket, expectRev: args.expectRev, kind: 'teardown', logRel: pm.logRelForKind('teardown'), command: [downScript, args.ticket], cwd: task.worktree ?? root, env, to: args.to });
+          await pm.dispatchAgent({ store, ticket: args.ticket, expectRev: args.expectRev, kind: 'teardown', logRel: pm.logRelForKind('teardown'), command: [downScript, args.ticket], cwd: task.worktree ?? tmpRoot, env, to: args.to });
         } else {
           throw new Error(`box-e2e dispatcher: unexpected kind ${args.kind}`);
         }
@@ -102,6 +109,6 @@ describe('preview lifecycle via the Engine (box-only)', () => {
     expect(done.terminalReason).toBe('approved');
     expect(done.preview).toBeNull(); // compute reclaimed
 
-    await rm(root, { recursive: true, force: true });
+    await rm(tmpRoot, { recursive: true, force: true });
   }, 700_000);
 });
