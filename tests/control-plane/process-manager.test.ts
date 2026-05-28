@@ -140,3 +140,26 @@ describe('ProcessManager.dispatchAgent — retry flag + extraMutate', () => {
     expect(rec.baseSha).toBe('deadbeef');
   });
 });
+
+describe('ProcessManager.buildScriptEnv + logRelForKind (Plan 4)', () => {
+  const pm = new ProcessManager({ stateRoot: '/x', model: 'opus', readTokenEnv: 'LINEAR_READ_TOKEN', extraEnv: ['AGENT_ONLY'], ownerGen: 'g' });
+
+  it('buildScriptEnv forwards the allowlist + named extras, NEVER the Linear token or agent extras', () => {
+    const env = pm.buildScriptEnv(['DOCKER_HOST'], {
+      PATH: '/usr/bin', HOME: '/home/u', TERM: 'xterm',
+      LINEAR_READ_TOKEN: 'lr', AGENT_ONLY: 'a', DOCKER_HOST: 'unix:///d.sock', SECRET_TOKEN: 's',
+    });
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.HOME).toBe('/home/u');
+    expect(env.DOCKER_HOST).toBe('unix:///d.sock');
+    expect(env.LINEAR_READ_TOKEN).toBeUndefined(); // preview scripts must not see the Linear token
+    expect(env.AGENT_ONLY).toBeUndefined();        // agent extras are not script extras
+    expect(env.SECRET_TOKEN).toBeUndefined();       // not in the allowlist or the named extras
+  });
+
+  it('logRelForKind gives preview/teardown distinct logs', () => {
+    expect(pm.logRelForKind('preview')).toBe('preview.log');
+    expect(pm.logRelForKind('teardown')).toBe('teardown.log');
+    expect(pm.logRelForKind('execute')).toBe('agent.jsonl'); // unchanged
+  });
+});

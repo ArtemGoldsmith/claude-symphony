@@ -159,7 +159,8 @@ describe('logRelForKind + abort', () => {
     expect(pm.logRelForKind('review')).toBe('review.jsonl');
     expect(pm.logRelForKind('gapfix')).toBe('gapfix.jsonl');
     expect(pm.logRelForKind('closeout')).toBe('closeout.jsonl');
-    expect(pm.logRelForKind('preview')).toBe('run.jsonl');
+    expect(pm.logRelForKind('preview')).toBe('preview.log');
+    expect(pm.logRelForKind('teardown')).toBe('teardown.log');
   });
 
   it('abort resolves without throwing for a non-existent group', async () => {

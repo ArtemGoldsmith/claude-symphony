@@ -69,6 +69,23 @@ export class ProcessManager {
     return out;
   }
 
+  /**
+   * Minimal env for a preview/teardown SCRIPT: the standard allowlist + ONLY the
+   * explicitly named build extras (e.g. DOCKER_HOST). It deliberately excludes the
+   * Linear read token and the agent's extraEnv — a preview script has no business
+   * with either (spec §8.1/§8.3 M2). The scripts self-provide PATH/DOCKER_HOST and
+   * source their own secrets file, so this is intentionally tiny.
+   */
+  buildScriptEnv(extraEnvNames: readonly string[], source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+    const out: NodeJS.ProcessEnv = {};
+    const keep = new Set<string>([...ENV_ALLOWLIST, ...extraEnvNames]);
+    for (const key of keep) {
+      const v = source[key];
+      if (typeof v === 'string') out[key] = v;
+    }
+    return out;
+  }
+
   /** Build the `claude -p` argv. Adds --resume when given a session. */
   buildAgentArgv(args: { prompt: string; settingsPath: string; resumeSessionId?: string }): string[] {
     const argv = ['claude', '-p', args.prompt];
@@ -248,6 +265,8 @@ export class ProcessManager {
       case 'review': return 'review.jsonl';
       case 'gapfix': return 'gapfix.jsonl';
       case 'closeout': return 'closeout.jsonl';
+      case 'preview': return 'preview.log';
+      case 'teardown': return 'teardown.log';
       default: return 'run.jsonl';
     }
   }
