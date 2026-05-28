@@ -46,6 +46,8 @@ The control plane's UI is a **Hono** app serving **server-rendered HTML** with a
 
 **Config + host.** Control-plane config is loaded from a `WORKFLOW.md`-style file via `config-loader.ts` (`loadControlPlaneConfig`), reusing the front-matter contract. The web server is **co-hosted with the daemon** through the `bin/control-plane.ts` entry point: one process holds the single-instance lock, runs the Engine tick loop, and serves the board.
 
+**Preview driver.** The control plane dispatches the configured `preview.up_script`/`preview.down_script` through the run-wrapper as **non-agent runs** (no prompt, no Linear token — a least-privilege script env carrying only an allowlist plus explicitly named build extras). The `previewing` and `tearing_down` phases **reconcile via the wrapper `exit.json`** (the scripts are synchronous; the exit code is authoritative), and a `preview.timeout_seconds` ceiling bounds a hung run (group-kill → `preview_failed`/`teardown_failed`, which expose retry + teardown). The Engine remains the sole ⊕-entry actor: the web layer only records the approve-preview/teardown transitions.
+
 No box-specific host, address, ticket id, or topic appears here; deployment specifics stay outside the public repo and the `scripts/check-public-invariants.sh` guard enforces it. Ticket placeholders use the `TEAM-NNN` form.
 
 ---
