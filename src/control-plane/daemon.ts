@@ -256,6 +256,10 @@ async function dispatchForKind(
     CONTEXT_PATHS: await readOpt(path.join(stateDir, 'context-paths.md')),
     PLAN_BODY: await readOpt(path.join(stateDir, 'plan.md')),
     REVIEW_TICKETS: (await readOpt(path.join(stateDir, 'review-tickets'))).trim(),
+    // Free-text operator note attached at task creation (POST /tasks); empty string
+    // when none. Treated as UNTRUSTED operator input in the prompt — the template
+    // must clamp it below its Hard rules block.
+    OPERATOR_NOTE: task.operatorNote ?? '',
   };
 
   const template = await fs.readFile(promptPath, 'utf8');

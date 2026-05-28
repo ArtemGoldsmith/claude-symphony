@@ -63,6 +63,9 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
     const body = await c.req.parseBody();
     const ticket = typeof body.ticket === 'string' ? body.ticket.trim().toUpperCase() : '';
     if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(ticket)) return c.text('bad ticket', 400);
+    // Free-text operator note (optional) — trimmed; empty/whitespace → null.
+    const noteRaw = typeof body.note === 'string' ? body.note.trim() : '';
+    const operatorNote = noteRaw.length > 0 ? noteRaw : null;
 
     // Fetch FIRST: a Linear miss must 404 WITHOUT having archived a prior terminal task.
     const issue = await linearRead.fetchIssueByIdentifier(ticket);
@@ -74,7 +77,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
         if (!isTerminalPhase(existing.phase)) return c.text('already tracked', 409);
         await store.archive(ticket); // terminal re-add (archive + create in ONE try)
       }
-      await store.create({ ticket, title: issue.title, url: issue.url ?? '' });
+      await store.create({ ticket, title: issue.title, url: issue.url ?? '', operatorNote });
     } catch (err) {
       // Concurrent re-add: a racing request may have already archived (UnknownTaskError)
       // or created (TaskExistsError) the ticket → 409, never a 500.

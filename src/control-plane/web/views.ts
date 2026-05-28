@@ -27,6 +27,7 @@ export interface ProjectedTask {
   openQuestions: TaskRecord['openQuestions'];
   answers: TaskRecord['answers'];
   rejectFeedback: string | null;
+  operatorNote: string | null;
   stage9: TaskRecord['stage9'];
   preview: { url: string; state: string } | null;
   failedFrom: Phase | null;
@@ -50,6 +51,7 @@ export function projectTask(t: TaskRecord): ProjectedTask {
     openQuestions: t.openQuestions,
     answers: t.answers,
     rejectFeedback: t.rejectFeedback,
+    operatorNote: t.operatorNote,
     stage9: t.stage9,
     preview: t.preview ? { url: t.preview.url, state: t.preview.state } : null,
     failedFrom: t.failedFrom,
@@ -65,6 +67,7 @@ const PAGE_HEAD = `<!doctype html><meta charset=utf-8>
 <script src="https://unpkg.com/htmx.org@2.0.3"></script>
 <style>
 body{font-family:system-ui;margin:0;background:#0f1115;color:#e6e6e6}
+h1{margin:1rem;font-size:1.1rem;letter-spacing:.02em;color:#aeb6c8}
 .board{display:flex;gap:.75rem;overflow-x:auto;padding:1rem}
 .col{flex:0 0 14rem;background:#171a21;border-radius:.5rem;padding:.5rem}
 .col h2{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8b93a7;margin:.25rem}
@@ -73,6 +76,22 @@ body{font-family:system-ui;margin:0;background:#0f1115;color:#e6e6e6}
 a{color:#7aa2f7}pre{white-space:pre-wrap;background:#171a21;padding:.75rem;border-radius:.4rem;overflow:auto}
 .detail{max-width:48rem;margin:1rem auto;padding:0 1rem}
 button{cursor:pointer}
+/* Add-ticket form card — styled, multi-field. Operator note feeds the prep agent. */
+.add-form{background:linear-gradient(180deg,#1a1f2a 0%,#171a21 100%);border:1px solid #232938;border-radius:.6rem;padding:1rem 1.25rem;margin:1rem;max-width:42rem;display:flex;flex-direction:column;gap:.75rem;box-shadow:0 1px 2px rgba(0,0,0,.4)}
+.add-form h2{margin:0;font-size:.95rem;color:#e6e6e6;font-weight:600;letter-spacing:.01em}
+.add-form .hint{margin:0;font-size:.78rem;color:#8b93a7;line-height:1.4}
+.add-form .lbl{display:block;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8b93a7;margin-bottom:.3rem}
+.add-form .lbl .opt{text-transform:none;font-size:.7rem;color:#5f677a;letter-spacing:0;margin-left:.3rem}
+.add-form input.add-id{width:14rem;padding:.55rem .75rem;background:#0f1115;border:1px solid #2a3144;border-radius:.4rem;color:#e6e6e6;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.95rem;letter-spacing:.02em}
+.add-form textarea.add-note{width:100%;box-sizing:border-box;padding:.65rem .8rem;background:#0f1115;border:1px solid #2a3144;border-radius:.4rem;color:#e6e6e6;font-family:inherit;font-size:.85rem;line-height:1.5;resize:vertical;min-height:5rem}
+.add-form input:focus,.add-form textarea:focus{outline:none;border-color:#7aa2f7;box-shadow:0 0 0 2px rgba(122,162,247,.18)}
+.add-form .add-actions{display:flex;justify-content:flex-end;align-items:center;gap:.6rem}
+.add-form button{background:#7aa2f7;color:#0f1115;border:none;padding:.55rem 1.1rem;border-radius:.4rem;font-weight:600;font-size:.85rem;cursor:pointer;transition:background .15s}
+.add-form button:hover{background:#9bb5ff}
+/* Operator-note callout on detail page */
+.op-note{background:#1a1f2a;border-left:3px solid #7aa2f7;padding:.55rem .8rem;border-radius:.3rem;margin:.6rem 0}
+.op-note h3{margin:0 0 .35rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:#8b93a7}
+.op-note .body{margin:0;font-family:inherit;white-space:pre-wrap;color:#e6e6e6;font-size:.88rem;line-height:1.45}
 </style>`;
 
 export function renderTaskCard(t: TaskRecord): string {
@@ -88,8 +107,20 @@ export function renderBoard(tasks: TaskRecord[]): string {
     const cards = (byPhase.get(ph) ?? []).map(renderTaskCard).join('');
     return `<section class=col><h2>${esc(ph)}</h2>${cards}</section>`;
   }).join('');
-  return `${PAGE_HEAD}<h1 style="margin:1rem">symphony board</h1>
-<form method=post action=/tasks style="margin:0 1rem"><input name=ticket placeholder="TEAM-NNN"> <button>add</button></form>
+  return `${PAGE_HEAD}<h1>symphony board</h1>
+<form class=add-form method=post action=/tasks>
+  <h2>+ new ticket</h2>
+  <p class=hint>The prep agent fetches the Linear ticket and any comments on its own. Use the note below to nudge it: a focus area, what NOT to touch, a reference, an edge case, a recent slack thread — anything the bare Linear ticket wouldn't tell it. The Hard rules in the prep prompt stay authoritative; this is treated as untrusted operator input.</p>
+  <label>
+    <span class=lbl>Linear ticket</span>
+    <input class=add-id name=ticket placeholder="PIN-NNN" required autocomplete=off>
+  </label>
+  <label>
+    <span class=lbl>Note for the prep agent<span class=opt>(optional)</span></span>
+    <textarea class=add-note name=note rows=5 placeholder="e.g.&#10;focus on the role-aware redirect (workflow doc §3.2)&#10;skip the audit-log work for now, defer to a follow-up&#10;reuse the upload component from TEAM-NNN instead of building new"></textarea>
+  </label>
+  <div class=add-actions><button type=submit>add to board ▸</button></div>
+</form>
 <div class=board>${cols}</div>`;
 }
 
@@ -101,6 +132,7 @@ export function renderDetail(t: TaskRecord, files: DetailFiles): string {
     `${PAGE_HEAD}<div class=detail><a href="/">&larr; board</a>`,
     `<h1>${esc(p.ticket)} — ${esc(p.title)}</h1>`,
     `<p>phase: <b>${esc(p.phase)}</b> · rev ${p.rev}${p.failedFrom ? ` · failedFrom ${esc(p.failedFrom)}` : ''}</p>`,
+    p.operatorNote ? `<div class=op-note><h3>operator note</h3><div class=body>${esc(p.operatorNote)}</div></div>` : '',
     `<p><a href="${esc(p.url)}" target=_blank rel=noopener>Linear ticket</a></p>`,
   ];
   if (files.plan) parts.push(`<h2>plan</h2><pre>${esc(files.plan)}</pre>`);

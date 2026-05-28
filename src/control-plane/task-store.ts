@@ -107,7 +107,7 @@ export class TaskStore {
     return cached!;
   }
 
-  async create(args: { ticket: string; title: string; url: string }): Promise<TaskRecord> {
+  async create(args: { ticket: string; title: string; url: string; operatorNote?: string | null }): Promise<TaskRecord> {
     return this.enqueue(args.ticket, async () => {
       // Reject a ticket already tracked in-memory OR on disk (spec §12 — the
       // web layer handles the terminal-archive flow before calling create).

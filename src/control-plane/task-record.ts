@@ -71,6 +71,10 @@ export const TaskRecordSchema = z.object({
   openQuestions: OpenQuestionsSchema.nullable(),
   answers: AnswersSchema.nullable(),
   rejectFeedback: z.string().nullable(),
+  // Free-text operator context attached at task creation — flows into the prep
+  // agent's ctx as {{OPERATOR_NOTE}}. Nullable + default-null so old task.json
+  // files (written before this field existed) still parse cleanly.
+  operatorNote: z.string().nullable().default(null),
   preview: z
     .object({ url: z.string(), gitSha: z.string(), state: z.string() })
     .nullable(),
@@ -101,6 +105,8 @@ export function newTaskRecord(args: {
   url: string;
   ownerGen: string;
   now: number;
+  /** Free-text operator note attached at task creation. */
+  operatorNote?: string | null;
 }): TaskRecord {
   return {
     ticket: args.ticket,
@@ -116,6 +122,7 @@ export function newTaskRecord(args: {
     openQuestions: null,
     answers: null,
     rejectFeedback: null,
+    operatorNote: args.operatorNote ?? null,
     preview: null,
     stage9: null,
     teardownTarget: null,
