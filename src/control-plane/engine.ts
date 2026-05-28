@@ -192,16 +192,16 @@ export class Engine {
   }
 
   /**
-   * The agent kind each chain ⊕ phase runs. prepping/executing are entered via a
-   * reserving promotion in tick(); reviewing/gapfixing/closing are entered via
-   * routeExit (which nulls currentRun) and run a CONTINUATION agent on the SAME
-   * slot — so ensureRunning dispatches them WITHOUT reserving. previewing has no
-   * entry here (its agent is preview-up, Plan 4).
+   * The kind each ⊕/active phase (re)dispatches as a CONTINUATION (no slot
+   * reservation — the phase already implies its slot, or holds none). Chain agents
+   * (review/gapfix/closeout) plus the Plan-4 scripts (preview/teardown).
    */
-  private static readonly CHAIN_AGENT: Partial<Record<Phase, RunRecord['kind']>> = {
+  private static readonly CONTINUATION_KIND: Partial<Record<Phase, RunRecord['kind']>> = {
     reviewing: 'review',
     gapfixing: 'gapfix',
     closing: 'closeout',
+    previewing: 'preview',
+    tearing_down: 'teardown',
   };
 
   /** The agent kind to (re)dispatch when re-entering each phase on retry. */
@@ -214,21 +214,21 @@ export class Engine {
   };
 
   /**
-   * Dispatch the continuation agent for any chain ⊕ phase task that holds its slot
-   * but has no live run (just routed in, or its run record was lost on restart).
-   * No slot reservation — the slot is already held by virtue of the ⊕ phase.
+   * Dispatch the continuation for any ⊕/active phase task that has no live run
+   * (just routed in, or its run record was lost on restart). No slot reservation —
+   * the slot is already held by virtue of the ⊕ phase (or tearing_down holds none).
    */
   async ensureRunning(): Promise<void> {
     const tasks = await this.store.list();
     for (const t of tasks) {
       if (t.currentRun) continue; // a run is present (running or awaiting routeExit)
-      const kind = Engine.CHAIN_AGENT[t.phase];
+      const kind = Engine.CONTINUATION_KIND[t.phase];
       if (!kind) continue;
       await this.dispatcher.dispatch({
         store: this.store,
         ticket: t.ticket,
         expectRev: t.rev,
-        to: t.phase, // continuation: stay in the same ⊕ phase (claim via updateRun)
+        to: t.phase, // continuation: stay in the same phase (claim via updateRun)
         kind,
       });
     }
@@ -249,10 +249,7 @@ export class Engine {
    * generation (§10 fencing), is preview/teardown (Plan 4), or is still running.
    * On clean/failed exit applies nextOnAgentExit and releases the slot iff the
    * task LEFT the ⊕set. closing→previewing stays ⊕ (slot retained) — until Plan 4
-   * wires the preview driver, a task parks in `previewing` holding its slot; this
-   * is acceptable because the pipeline cannot reach `closing` in production without
-   * the execute/preview backend Plan 4 completes. The engine logs a warning so the
-   * park is visible (codex HIGH #5).
+   * wires the preview driver, a task parks in `previewing` holding its slot.
    */
   async routeExit(ticket: string): Promise<void> {
     const t = await this.store.get(ticket);
