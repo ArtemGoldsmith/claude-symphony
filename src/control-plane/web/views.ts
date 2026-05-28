@@ -62,10 +62,23 @@ export function projectTask(t: TaskRecord): ProjectedTask {
   };
 }
 
-const PAGE_HEAD = `<!doctype html><meta charset=utf-8>
+/** Inline SVG favicon (data URI) — three accent-blue bars at different heights
+ *  (kanban / equalizer hybrid). Served inline so /favicon.* needs no route + no
+ *  auth-middleware special-casing; browsers pick it up via the link tag. */
+const FAVICON = `<link rel=icon type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='1.5' y='4' width='3' height='9' rx='.6' fill='%237aa2f7'/><rect x='6.5' y='2' width='3' height='11' rx='.6' fill='%239bb5ff'/><rect x='11.5' y='6' width='3' height='7' rx='.6' fill='%237aa2f7'/></svg>">`;
+
+/** Shared HTML head — title varies per page so tabs stay distinguishable in
+ *  a crowded browser strip (operator's actual complaint: the tab gets lost). */
+export function pageHead(title: string): string {
+  return `<!doctype html><meta charset=utf-8>
+<title>${esc(title)}</title>
+${FAVICON}
 <meta name=viewport content="width=device-width,initial-scale=1">
 <script src="https://unpkg.com/htmx.org@2.0.3"></script>
-<style>
+<style>` + PAGE_STYLE + `</style>`;
+}
+
+const PAGE_STYLE = `
 body{font-family:system-ui;margin:0;background:#0f1115;color:#e6e6e6}
 h1{margin:1rem;font-size:1.1rem;letter-spacing:.02em;color:#aeb6c8}
 .board{display:flex;gap:.75rem;overflow-x:auto;padding:1rem}
@@ -92,7 +105,7 @@ button{cursor:pointer}
 .op-note{background:#1a1f2a;border-left:3px solid #7aa2f7;padding:.55rem .8rem;border-radius:.3rem;margin:.6rem 0}
 .op-note h3{margin:0 0 .35rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:#8b93a7}
 .op-note .body{margin:0;font-family:inherit;white-space:pre-wrap;color:#e6e6e6;font-size:.88rem;line-height:1.45}
-</style>`;
+`;
 
 export function renderTaskCard(t: TaskRecord): string {
   const p = projectTask(t);
@@ -107,7 +120,7 @@ export function renderBoard(tasks: TaskRecord[]): string {
     const cards = (byPhase.get(ph) ?? []).map(renderTaskCard).join('');
     return `<section class=col><h2>${esc(ph)}</h2>${cards}</section>`;
   }).join('');
-  return `${PAGE_HEAD}<h1>symphony board</h1>
+  return `${pageHead('symphony')}<h1>symphony board</h1>
 <form class=add-form method=post action=/tasks>
   <h2>+ new ticket</h2>
   <p class=hint>The prep agent fetches the Linear ticket and any comments on its own. Use the note below to nudge it: a focus area, what NOT to touch, a reference, an edge case, a recent slack thread — anything the bare Linear ticket wouldn't tell it. The Hard rules in the prep prompt stay authoritative; this is treated as untrusted operator input.</p>
@@ -129,7 +142,7 @@ export interface DetailFiles { plan: string; recap: string; reviewFresh: string;
 export function renderDetail(t: TaskRecord, files: DetailFiles): string {
   const p = projectTask(t);
   const parts: string[] = [
-    `${PAGE_HEAD}<div class=detail><a href="/">&larr; board</a>`,
+    `${pageHead(`${p.ticket} · ${p.phase} — symphony`)}<div class=detail><a href="/">&larr; board</a>`,
     `<h1>${esc(p.ticket)} — ${esc(p.title)}</h1>`,
     `<p>phase: <b>${esc(p.phase)}</b> · rev ${p.rev}${p.failedFrom ? ` · failedFrom ${esc(p.failedFrom)}` : ''}</p>`,
     p.operatorNote ? `<div class=op-note><h3>operator note</h3><div class=body>${esc(p.operatorNote)}</div></div>` : '',

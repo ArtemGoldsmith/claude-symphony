@@ -9,6 +9,8 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Hono, MiddlewareHandler } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 
+import { pageHead } from './views.js';
+
 export const COOKIE_NAME = 'symphony_token';
 
 /** Constant-time string equality via fixed-length digests. */
@@ -64,10 +66,13 @@ export function createAuthMiddleware(token: string): MiddlewareHandler {
   };
 }
 
-const LOGIN_FORM = `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
-<form method=post action=/login style="font-family:system-ui;max-width:20rem;margin:4rem auto">
-<h1>symphony</h1><input name=token type=password placeholder="board token" autofocus
- style="width:100%;padding:.6rem;font-size:1rem"><button style="margin-top:.5rem;padding:.6rem 1rem">enter</button></form>`;
+const LOGIN_FORM = `${pageHead('login — symphony')}
+<form method=post action=/login style="max-width:20rem;margin:4rem auto;padding:0 1rem">
+<h1 style="text-align:center">symphony</h1>
+<input name=token type=password placeholder="board token" autofocus
+ style="width:100%;box-sizing:border-box;padding:.6rem .75rem;background:#0f1115;border:1px solid #2a3144;border-radius:.4rem;color:#e6e6e6;font-size:.95rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace">
+<button style="margin-top:.5rem;padding:.55rem 1.1rem;background:#7aa2f7;color:#0f1115;border:none;border-radius:.4rem;font-weight:600;cursor:pointer">enter</button>
+</form>`;
 
 /** Mount the (un-gated) login routes BEFORE the auth middleware. */
 export function mountLogin(app: Hono, token: string): void {
