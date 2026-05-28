@@ -160,8 +160,9 @@ function renderStage9(p: ProjectedTask): string {
 }
 
 function renderRetry(p: ProjectedTask): string {
-  const canRetry = p.phase === 'prep_failed' || p.phase === 'execute_failed';
-  return `<h2>failed</h2><p>attempts: prep ${p.attempts.prep} / execute ${p.attempts.execute}</p>
-${canRetry ? `<form hx-post="/tasks/${esc(p.ticket)}/retry" hx-target=body><input type=hidden name=rev value="${p.rev}"><button>retry</button></form>` : '<p>preview/teardown retry is Plan 4</p>'}
+  const canRetry = p.phase === 'prep_failed' || p.phase === 'execute_failed'
+    || p.phase === 'preview_failed' || p.phase === 'teardown_failed';
+  return `<h2>failed (${esc(p.phase)})</h2><p>attempts: prep ${p.attempts.prep} / execute ${p.attempts.execute}</p>
+${canRetry ? `<form hx-post="/tasks/${esc(p.ticket)}/retry" hx-target=body><input type=hidden name=rev value="${p.rev}"><button>retry</button></form>` : ''}
 <form hx-post="/tasks/${esc(p.ticket)}/teardown" hx-target=body style="margin-top:.5rem"><input type=hidden name=rev value="${p.rev}"><button>teardown (abandon)</button></form>`;
 }

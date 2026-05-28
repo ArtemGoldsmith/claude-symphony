@@ -189,7 +189,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
     const isFailed = t.phase.endsWith('_failed');
     if (t.phase !== 'ready' && !isFailed) return c.text('not tearable', 409);
     const body = await c.req.parseBody();
-    const livePreview = t.preview && ['up', 'starting', 'failed'].includes(t.preview.state);
+    const livePreview = !!t.preview && ['up', 'starting', 'failed', 'tearing_down'].includes(t.preview.state);
     try {
       if (isFailed && !livePreview) {
         await store.advance(id, { expectRev: formRev(body), to: 'abandoned', mutate: (r) => { r.terminalReason = 'abandoned'; } });
@@ -204,7 +204,8 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
     const id = c.req.param('id');
     const t = await store.get(id);
     if (!t) return c.text('not found', 404);
-    if (t.phase !== 'prep_failed' && t.phase !== 'execute_failed') return c.text('retry not available for this phase', 409);
+    const RETRYABLE = new Set(['prep_failed', 'execute_failed', 'preview_failed', 'teardown_failed']);
+    if (!RETRYABLE.has(t.phase)) return c.text('retry not available for this phase', 409);
     const body = await c.req.parseBody();
     try {
       await store.updateRun(id, formRev(body), (r) => { r.retryRequested = true; });

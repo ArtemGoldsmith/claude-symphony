@@ -195,7 +195,7 @@ describe('retry', () => {
     expect(t.phase).toBe('prep_failed'); // unchanged
     expect(t.retryRequested).toBe(true);
   });
-  it('409s retry on preview_failed (Plan 4)', async () => {
+  it('retry on preview_failed sets retryRequested (303)', async () => {
     await store.create({ ticket: 'PIN-1', title: 'T', url: 'u' });
     await store.advance('PIN-1', { expectRev: 0, to: 'prepping', mutate: (r) => { r.worktree = '/wt'; } });
     await store.advance('PIN-1', { expectRev: 1, to: 'awaiting_approval' });
@@ -206,6 +206,24 @@ describe('retry', () => {
     await store.advance('PIN-1', { expectRev: 6, to: 'previewing', mutate: (r) => { r.currentRun = null; } });
     await store.advance('PIN-1', { expectRev: 7, to: 'preview_failed', mutate: (r) => { r.failedFrom = 'previewing'; } });
     const res = await app.request('/tasks/PIN-1/retry', form({ rev: await rev('PIN-1') }));
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(303);
+    expect((await store.get('PIN-1'))!.retryRequested).toBe(true);
+  });
+
+  it('retry on teardown_failed sets retryRequested (303)', async () => {
+    await store.create({ ticket: 'PIN-1', title: 'T', url: 'u' });
+    await store.advance('PIN-1', { expectRev: 0, to: 'prepping', mutate: (r) => { r.worktree = '/wt'; } });
+    await store.advance('PIN-1', { expectRev: 1, to: 'awaiting_approval' });
+    await store.advance('PIN-1', { expectRev: 2, to: 'approved' });
+    await store.advance('PIN-1', { expectRev: 3, to: 'executing' });
+    await store.advance('PIN-1', { expectRev: 4, to: 'reviewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance('PIN-1', { expectRev: 5, to: 'closing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance('PIN-1', { expectRev: 6, to: 'previewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance('PIN-1', { expectRev: 7, to: 'ready', mutate: (r) => { r.preview = { url: 'u', gitSha: 's', state: 'up' }; } });
+    await store.advance('PIN-1', { expectRev: 8, to: 'tearing_down', mutate: (r) => { r.teardownTarget = 'done'; } });
+    await store.advance('PIN-1', { expectRev: 9, to: 'teardown_failed', mutate: (r) => { r.failedFrom = 'tearing_down'; } });
+    const res = await app.request('/tasks/PIN-1/retry', form({ rev: await rev('PIN-1') }));
+    expect(res.status).toBe(303);
+    expect((await store.get('PIN-1'))!.retryRequested).toBe(true);
   });
 });
