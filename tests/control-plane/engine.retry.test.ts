@@ -113,24 +113,6 @@ describe('Engine retry lane', () => {
     expect(slots.active).toBe(0);
   });
 
-  it('ignores retryRequested on preview_failed/teardown_failed (Plan 4)', async () => {
-    await store.create({ ticket: 'PIN-4', title: 'T', url: 'u' });
-    await store.advance('PIN-4', { expectRev: 0, to: 'prepping', mutate: (r) => { r.worktree = '/wt'; } });
-    await store.advance('PIN-4', { expectRev: 1, to: 'awaiting_approval' });
-    await store.advance('PIN-4', { expectRev: 2, to: 'approved' });
-    await store.advance('PIN-4', { expectRev: 3, to: 'executing' });
-    await store.advance('PIN-4', { expectRev: 4, to: 'reviewing', mutate: (r) => { r.currentRun = null; } });
-    await store.advance('PIN-4', { expectRev: 5, to: 'closing', mutate: (r) => { r.currentRun = null; } });
-    await store.advance('PIN-4', { expectRev: 6, to: 'previewing', mutate: (r) => { r.currentRun = null; } });
-    await store.advance('PIN-4', { expectRev: 7, to: 'preview_failed', mutate: (r) => { r.failedFrom = 'previewing'; } });
-    await store.updateRun('PIN-4', 8, (r) => { r.retryRequested = true; });
-    const calls: DispatchArgs[] = [];
-    const slots = new SlotCounter(2);
-    await engineWith(recordingDispatcher(calls), slots).tick();
-    expect(calls).toHaveLength(0);
-    expect(slots.active).toBe(0);
-  });
-
   it('Lane C catch: a deterministic retry dispatch failure releases the slot and clears the flag (no loop)', async () => {
     await toExecuteFailed('PIN-6', 'executing');
     await store.updateRun('PIN-6', (await store.get('PIN-6'))!.rev, (r) => { r.retryRequested = true; });

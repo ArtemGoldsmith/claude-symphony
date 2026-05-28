@@ -319,3 +319,87 @@ describe('Engine.routeExit — teardown', () => {
     expect(slots.active).toBe(0);
   });
 });
+
+describe('Engine retry lane — preview/teardown (slot-conditional)', () => {
+  async function previewFailed(ticket: string): Promise<void> {
+    await store.create({ ticket, title: 'T', url: 'u' });
+    await store.advance(ticket, { expectRev: 0, to: 'prepping', mutate: (r) => { r.worktree = '/wt'; } });
+    await store.advance(ticket, { expectRev: 1, to: 'awaiting_approval' });
+    await store.advance(ticket, { expectRev: 2, to: 'approved' });
+    await store.advance(ticket, { expectRev: 3, to: 'executing' });
+    await store.advance(ticket, { expectRev: 4, to: 'reviewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance(ticket, { expectRev: 5, to: 'closing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance(ticket, { expectRev: 6, to: 'previewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance(ticket, { expectRev: 7, to: 'preview_failed', mutate: (r) => { r.failedFrom = 'previewing'; } });
+    await store.updateRun(ticket, 8, (r) => { r.retryRequested = true; });
+  }
+
+  it('preview_failed retry reserves a slot, re-enters previewing, ensureRunning dispatches preview', async () => {
+    await previewFailed('PIN-1');
+    const calls: DispatchArgs[] = [];
+    const slots = new SlotCounter(2);
+    await engineWith(recordingDispatcher(calls), slots).tick();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.kind).toBe('preview');
+    expect(calls[0]!.to).toBe('previewing');
+    expect(slots.active).toBe(1); // previewing ∈ ⊕ → reserved once
+    expect((await store.get('PIN-1'))!.retryRequested).toBe(false);
+  });
+
+  it('preview_failed retry breaks when no slot is free', async () => {
+    await previewFailed('PIN-2');
+    const calls: DispatchArgs[] = [];
+    const slots = new SlotCounter(1); slots.tryReserve();
+    await engineWith(recordingDispatcher(calls), slots).tick();
+    expect(calls).toHaveLength(0);
+    expect((await store.get('PIN-2'))!.phase).toBe('preview_failed');
+    expect((await store.get('PIN-2'))!.retryRequested).toBe(true);
+  });
+
+  it('teardown_failed retry re-enters tearing_down WITHOUT reserving a slot', async () => {
+    await store.create({ ticket: 'PIN-3', title: 'T', url: 'u' });
+    await store.advance('PIN-3', { expectRev: 0, to: 'prepping', mutate: (r) => { r.worktree = '/wt'; } });
+    await store.advance('PIN-3', { expectRev: 1, to: 'awaiting_approval' });
+    await store.advance('PIN-3', { expectRev: 2, to: 'approved' });
+    await store.advance('PIN-3', { expectRev: 3, to: 'executing' });
+    await store.advance('PIN-3', { expectRev: 4, to: 'reviewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance('PIN-3', { expectRev: 5, to: 'closing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance('PIN-3', { expectRev: 6, to: 'previewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance('PIN-3', { expectRev: 7, to: 'ready', mutate: (r) => { r.preview = { url: 'u', gitSha: 's', state: 'up' }; } });
+    await store.advance('PIN-3', { expectRev: 8, to: 'tearing_down', mutate: (r) => { r.teardownTarget = 'done'; } });
+    await store.advance('PIN-3', { expectRev: 9, to: 'teardown_failed', mutate: (r) => { r.failedFrom = 'tearing_down'; } });
+    await store.updateRun('PIN-3', 10, (r) => { r.retryRequested = true; });
+    const calls: DispatchArgs[] = [];
+    const slots = new SlotCounter(2);
+    await engineWith(recordingDispatcher(calls), slots).tick();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.kind).toBe('teardown');
+    expect(calls[0]!.to).toBe('tearing_down');
+    expect(slots.active).toBe(0); // tearing_down ∉ ⊕ → no reservation
+    expect((await store.get('PIN-3'))!.retryRequested).toBe(false);
+  });
+
+  it('a saturated earlier slot-retry does NOT starve a later non-slot teardown retry (codex HIGH)', async () => {
+    // PIN-30 (older) = preview_failed retry needing a slot; slots are full → it cannot proceed.
+    await previewFailed('PIN-30');
+    // PIN-31 (newer) = teardown_failed retry needing NO slot → must still be dispatched.
+    await store.create({ ticket: 'PIN-31', title: 'T', url: 'u' });
+    await store.advance('PIN-31', { expectRev: 0, to: 'prepping', mutate: (r) => { r.worktree = '/wt'; } });
+    await store.advance('PIN-31', { expectRev: 1, to: 'awaiting_approval' });
+    await store.advance('PIN-31', { expectRev: 2, to: 'approved' });
+    await store.advance('PIN-31', { expectRev: 3, to: 'executing' });
+    await store.advance('PIN-31', { expectRev: 4, to: 'reviewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance('PIN-31', { expectRev: 5, to: 'closing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance('PIN-31', { expectRev: 6, to: 'previewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance('PIN-31', { expectRev: 7, to: 'ready', mutate: (r) => { r.preview = { url: 'u', gitSha: 's', state: 'up' }; } });
+    await store.advance('PIN-31', { expectRev: 8, to: 'tearing_down', mutate: (r) => { r.teardownTarget = 'done'; } });
+    await store.advance('PIN-31', { expectRev: 9, to: 'teardown_failed', mutate: (r) => { r.failedFrom = 'tearing_down'; } });
+    await store.updateRun('PIN-31', 10, (r) => { r.retryRequested = true; });
+    const calls: DispatchArgs[] = [];
+    const slots = new SlotCounter(1); slots.tryReserve(); // saturated → PIN-30 cannot reserve
+    await engineWith(recordingDispatcher(calls), slots).tick();
+    // PIN-30 stays preview_failed (no slot), PIN-31 teardown still dispatched
+    expect((await store.get('PIN-30'))!.phase).toBe('preview_failed');
+    expect(calls.some((c) => c.kind === 'teardown' && c.to === 'tearing_down')).toBe(true);
+  });
+});

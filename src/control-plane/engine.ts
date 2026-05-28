@@ -156,7 +156,7 @@ export class Engine {
             ? { to: 'executing', kind: 'execute' }
             : null;
       if (promo) {
-        if (!this.slots.tryReserve()) break;
+        if (!this.slots.tryReserve()) continue; // slots only decrease within a tick → FIFO preserved; continue lets later non-slot retries run
         try {
           await this.dispatcher.dispatch({ store: this.store, ticket: t.ticket, expectRev: t.rev, to: promo.to, kind: promo.kind });
         } catch (err) {
@@ -181,34 +181,32 @@ export class Engine {
         }
         continue;
       }
-      // Lane C: granular retry. Only execute-chain failures are wired (Plan 3).
-      // only re-enter from a failure phase — never double-reserve from a slot phase
+      // Lane C: granular retry (§17 + §8.3). Slot reserved only when the re-entry
+      // target is itself a ⊕ phase (previewing yes; tearing_down no).
       if (t.phase.endsWith('_failed') && t.retryRequested && t.failedFrom && Engine.RETRY_KIND[t.failedFrom]) {
         const target = t.failedFrom;
         const kind = Engine.RETRY_KIND[target]!;
-        if (!this.slots.tryReserve()) break;
+        const needsSlot = isSlotPhase(target);
+        if (needsSlot && !this.slots.tryReserve()) continue; // codex HIGH: continue, not break — don't starve later non-slot teardown retries
         try {
           if (target === 'executing' || target === 'prepping') {
-            // Reserving dispatch: the dispatcher runs clean-room/intake + claims the
-            // advance (clearing retryRequested in its mutate).
+            // Reserving dispatch: the dispatcher runs clean-room/intake + claims.
             await this.dispatcher.dispatch({ store: this.store, ticket: t.ticket, expectRev: t.rev, to: target, kind });
           } else {
-            // Chain continuation: advance into the chain phase (slot now held), clear
-            // the flag + null the run; ensureRunning dispatches the agent.
+            // Continuation re-entry (reviewing/gapfixing/closing/previewing/tearing_down):
+            // advance into the phase, clear the flag + null the run; ensureRunning
+            // dispatches the agent/script on the (now-held, or none) slot.
             await this.store.advance(t.ticket, {
               expectRev: t.rev, to: target,
               mutate: (r) => { r.retryRequested = false; r.currentRun = null; },
             });
           }
         } catch (err) {
-          // Same as the promo lane: release ONLY if the (re)entry did not land.
           const after = await this.store.get(t.ticket);
           const landed = !!after && after.phase === target;
           if (!landed) {
-            this.slots.release();
-            // Clear the flag at the rev WE read (not latest), so a concurrently re-set
-            // flag (newer rev) is not clobbered. Deterministic failure → clears → no loop.
-            try { await this.store.updateRun(t.ticket, t.rev, (r) => { r.retryRequested = false; }); } catch { /* rev moved on; leave it */ }
+            if (needsSlot) this.slots.release();
+            try { await this.store.updateRun(t.ticket, t.rev, (r) => { r.retryRequested = false; }); } catch { /* rev moved on */ }
           }
           this.logWarn('retry lane error', { ticket: t.ticket, landed, error: (err as Error).message });
           continue;
@@ -240,6 +238,8 @@ export class Engine {
     reviewing: 'review',
     gapfixing: 'gapfix',
     closing: 'closeout',
+    previewing: 'preview',
+    tearing_down: 'teardown',
   };
 
   /**
