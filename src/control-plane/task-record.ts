@@ -25,17 +25,17 @@ const RunRecordSchema = z.object({
 
 export type RunRecord = z.infer<typeof RunRecordSchema>;
 
+export const OpenQuestionItemSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  kind: z.enum(['choice', 'free', 'bool']),
+  required: z.boolean(),
+  options: z.array(z.string()).optional(),
+});
+
 const OpenQuestionsSchema = z.object({
   rev: z.number().int().nonnegative(),
-  items: z.array(
-    z.object({
-      id: z.string(),
-      text: z.string(),
-      kind: z.enum(['choice', 'free', 'bool']),
-      required: z.boolean(),
-      options: z.array(z.string()).optional(),
-    }),
-  ),
+  items: z.array(OpenQuestionItemSchema),
 });
 
 const AnswersSchema = z.object({
@@ -44,7 +44,7 @@ const AnswersSchema = z.object({
   values: z.record(z.string(), z.string()),
 });
 
-const Stage9Schema = z.object({
+export const Stage9Schema = z.object({
   attemptId: z.number().int().nonnegative(),
   gitSha: z.string(),
   items: z.array(
