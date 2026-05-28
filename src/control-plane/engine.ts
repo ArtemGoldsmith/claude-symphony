@@ -27,6 +27,17 @@ export interface Dispatcher {
   dispatch(args: DispatchArgs): Promise<void>;
 }
 
+/** What readPreviewOutcome reports from preview.json + the worktree HEAD (§8.3). */
+export interface PreviewOutcome {
+  state: string;       // preview.json.state
+  gitSha: string;      // preview.json.gitSha
+  url: string;         // https://<caddyVhost>
+  headMatches: boolean; // preview.json.gitSha === `git rev-parse HEAD`
+}
+
+/** One open question, as loaded from open-questions.json (the control plane owns the rev). */
+export type OpenQuestionItem = NonNullable<TaskRecord['openQuestions']>['items'][number];
+
 export interface EngineOptions {
   store: TaskStore;
   slots: SlotCounter;
@@ -46,6 +57,16 @@ export interface EngineOptions {
    * `null` when the run is still running/unknown (do not route yet).
    */
   probeExit?: (task: TaskRecord) => Promise<{ ok: boolean } | null>;
+  /** §8 guard at closing→previewing: worktree clean AND HEAD != baseSha. Exception
+   *  → treated as guard-fail. Default allows (tests inject the I/O). */
+  canPreview?: (task: TaskRecord) => Promise<boolean>;
+  /** Read preview.json (+ HEAD) after a preview run. Default returns null. */
+  readPreviewOutcome?: (task: TaskRecord) => Promise<PreviewOutcome | null>;
+  /** Load open-questions.json items at prepping→awaiting_approval (control plane
+   *  assigns the rev). Default returns null → empty question set. */
+  loadOpenQuestions?: (task: TaskRecord) => Promise<OpenQuestionItem[] | null>;
+  /** Load stage9.json at previewing→ready. Default returns null → empty stage9. */
+  loadStage9?: (task: TaskRecord) => Promise<TaskRecord['stage9']>;
 }
 
 export class Engine {
@@ -57,6 +78,10 @@ export class Engine {
   private readonly ownerGen: string;
   private readonly logWarn: (msg: string, meta?: Record<string, unknown>) => void;
   private readonly probeExit: (task: TaskRecord) => Promise<{ ok: boolean } | null>;
+  private readonly canPreview: (task: TaskRecord) => Promise<boolean>;
+  private readonly readPreviewOutcome: (task: TaskRecord) => Promise<PreviewOutcome | null>;
+  private readonly loadOpenQuestions: (task: TaskRecord) => Promise<OpenQuestionItem[] | null>;
+  private readonly loadStage9: (task: TaskRecord) => Promise<TaskRecord['stage9']>;
 
   constructor(opts: EngineOptions) {
     this.store = opts.store;
@@ -67,6 +92,10 @@ export class Engine {
     this.ownerGen = opts.ownerGen;
     this.logWarn = opts.logWarn ?? (() => undefined);
     this.probeExit = opts.probeExit ?? (async () => null);
+    this.canPreview = opts.canPreview ?? (async () => true);
+    this.readPreviewOutcome = opts.readPreviewOutcome ?? (async () => null);
+    this.loadOpenQuestions = opts.loadOpenQuestions ?? (async () => null);
+    this.loadStage9 = opts.loadStage9 ?? (async () => null);
   }
 
   /**
@@ -244,46 +273,110 @@ export class Engine {
     }
   }
 
-  /**
-   * Route a single task's finished run. No-op if the run belongs to another
-   * generation (§10 fencing), is preview/teardown (Plan 4), or is still running.
-   * On clean/failed exit applies nextOnAgentExit and releases the slot iff the
-   * task LEFT the ⊕set. closing→previewing stays ⊕ (slot retained) — until Plan 4
-   * wires the preview driver, a task parks in `previewing` holding its slot.
-   */
   async routeExit(ticket: string): Promise<void> {
     const t = await this.store.get(ticket);
     if (!t || !t.currentRun) return;
     if (!isActiveRunPhase(t.phase)) return;
-    if (t.currentRun.kind === 'preview' || t.currentRun.kind === 'teardown') return; // Plan 4
-    if (t.currentRun.ownerGen !== this.ownerGen) return; // not ours to route
+    if (t.currentRun.ownerGen !== this.ownerGen) return; // not ours to route (§10 fencing)
 
-    const result = await this.probeExit(t);
+    const result = await this.probeExit(t); // for preview/teardown this also enforces the ceiling
     if (result === null) return; // still running / within grace
 
-    const route = nextOnAgentExit(t.phase, result.ok);
-    let to: Phase = route.to;
-    if (t.phase === 'reviewing' && result.ok && route.alt) {
-      const hasGaps = await this.reviewHasGaps(taskDir(this.stateRoot, ticket));
-      to = hasGaps ? route.alt : route.to; // gaps → gapfixing, else → closing
+    const kind = t.currentRun.kind;
+    if (kind === 'preview' || kind === 'teardown') {
+      await this.routeScriptExit(t, result.ok);
+      return;
     }
 
     const from = t.phase;
+    const route = nextOnAgentExit(from, result.ok);
+    let to: Phase = route.to;
+    let failedFrom = route.failedFrom;
+    if (from === 'reviewing' && result.ok && route.alt) {
+      const hasGaps = await this.reviewHasGaps(taskDir(this.stateRoot, ticket));
+      to = hasGaps ? route.alt : route.to;
+    }
+    // §8 guard: a clean closeout would route closing→previewing only if the worktree
+    // is clean and HEAD != baseSha. A guard failure (or a thrown probe) re-runs the
+    // executor instead of previewing stale/uncommitted code.
+    if (from === 'closing' && result.ok && to === 'previewing') {
+      let allowed: boolean;
+      try { allowed = await this.canPreview(t); } catch { allowed = false; }
+      if (!allowed) { to = 'execute_failed'; failedFrom = 'executing'; }
+    }
+
+    // Load prep output into the record so the awaiting_approval gate renders (§5).
+    // The control plane owns the rev (fresh monotonic each prep completion, incl.
+    // retries); answers are cleared so a re-prep can't approve against stale answers.
+    let oqItems: OpenQuestionItem[] | null = null;
+    if (from === 'prepping' && to === 'awaiting_approval') {
+      try { oqItems = await this.loadOpenQuestions(t); } catch { oqItems = null; }
+    }
+
     await this.store.advance(ticket, {
-      expectRev: t.rev,
-      to,
+      expectRev: t.rev, to,
       mutate: (r) => {
-        if (route.failedFrom) r.failedFrom = route.failedFrom;
-        // The run is done. Keep currentRun only when the SAME run continues in a
-        // new ⊕ phase via a fresh dispatch (not here — dispatch sets its own run).
+        if (failedFrom) r.failedFrom = failedFrom;
+        if (from === 'prepping' && to === 'awaiting_approval') {
+          r.openQuestions = { rev: (t.openQuestions?.rev ?? 0) + 1, items: oqItems ?? [] };
+          r.answers = null;
+        }
         r.currentRun = null;
       },
     });
-    // Explicit slot release: only when leaving the ⊕set.
     if (isSlotPhase(from) && !isSlotPhase(to)) this.slots.release();
-    if (to === 'previewing') {
-      this.logWarn('task reached previewing; awaiting Plan-4 preview driver (slot held)', { ticket });
+  }
+
+  /**
+   * Route a finished preview/teardown SCRIPT run. Exit code is authoritative (the
+   * script can leave preview.json stuck at "starting" on a build failure, §8). The
+   * shared slot-release guard runs at the end so previewing→{ready,preview_failed}
+   * releases its slot and tearing_down (no slot) releases nothing (§8.3 H2).
+   */
+  private async routeScriptExit(t: TaskRecord, ok: boolean): Promise<void> {
+    const from = t.phase;
+    let to: Phase;
+    let mutate: (r: TaskRecord) => void;
+
+    if (from === 'previewing') {
+      let outcome: PreviewOutcome | null = null;
+      try { outcome = await this.readPreviewOutcome(t); } catch { outcome = null; }
+      if (ok && outcome && outcome.state === 'up' && outcome.headMatches) {
+        to = 'ready';
+        // Load closeout's stage9.json so the ready gate renders (§5). Fall back to an
+        // empty stage9 stamped with this gitSha so approve-preview is still reachable.
+        let stage9: TaskRecord['stage9'] = null;
+        try { stage9 = await this.loadStage9(t); } catch { stage9 = null; }
+        const loadedStage9 = stage9 ?? { attemptId: t.attempts.execute, gitSha: outcome.gitSha, items: [] };
+        mutate = (r) => { r.preview = { url: outcome!.url, gitSha: outcome!.gitSha, state: 'up' }; r.stage9 = loadedStage9; r.currentRun = null; };
+      } else {
+        to = 'preview_failed';
+        // H1: record task.preview from the (possibly stuck) outcome so /teardown +
+        // the board see that real compute may be live and needs reclaiming.
+        const preview = outcome
+          ? { url: '', gitSha: outcome.gitSha, state: outcome.state }
+          : { url: '', gitSha: '', state: 'failed' };
+        mutate = (r) => { r.failedFrom = 'previewing'; r.preview = preview; r.currentRun = null; };
+      }
+    } else {
+      // tearing_down
+      if (ok) {
+        const target: Phase = t.teardownTarget ?? 'abandoned';
+        to = target;
+        mutate = (r) => {
+          r.currentRun = null;
+          r.teardownTarget = null;
+          r.preview = null; // compute reclaimed (§8.3 M3)
+          if (target === 'abandoned') r.terminalReason = 'abandoned';
+        };
+      } else {
+        to = 'teardown_failed';
+        mutate = (r) => { r.failedFrom = 'tearing_down'; r.currentRun = null; };
+      }
     }
+
+    await this.store.advance(t.ticket, { expectRev: t.rev, to, mutate });
+    if (isSlotPhase(from) && !isSlotPhase(to)) this.slots.release();
   }
 
   /** Reconcile after a (re)boot: route finished runs, then re-dispatch any chain

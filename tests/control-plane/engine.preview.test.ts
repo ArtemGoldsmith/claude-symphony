@@ -95,3 +95,227 @@ describe('Engine.ensureRunning — preview/teardown continuations', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+import type { PreviewOutcome } from '../../src/control-plane/engine.js';
+
+function engineFull(opts: {
+  dispatcher?: Dispatcher; slots?: SlotCounter;
+  probe?: (t: TaskRecord) => Promise<{ ok: boolean } | null>;
+  canPreview?: (t: TaskRecord) => Promise<boolean>;
+  outcome?: (t: TaskRecord) => Promise<PreviewOutcome | null>;
+  loadOQ?: (t: TaskRecord) => Promise<import('../../src/control-plane/engine.js').OpenQuestionItem[] | null>;
+  loadS9?: (t: TaskRecord) => Promise<TaskRecord['stage9']>;
+}): Engine {
+  return new Engine({
+    store, slots: opts.slots ?? new SlotCounter(2),
+    dispatcher: opts.dispatcher ?? recordingDispatcher([]),
+    reviewHasGaps: async () => false,
+    stateRoot: root, ownerGen: 'gen-1', now: () => 100,
+    probeExit: opts.probe ?? (async () => ({ ok: true })),
+    ...(opts.canPreview ? { canPreview: opts.canPreview } : {}),
+    ...(opts.outcome ? { readPreviewOutcome: opts.outcome } : {}),
+    ...(opts.loadOQ ? { loadOpenQuestions: opts.loadOQ } : {}),
+    ...(opts.loadS9 ? { loadStage9: opts.loadS9 } : {}),
+  });
+}
+
+// place a task into `previewing` WITH a finished preview run to route.
+async function previewingWithRun(ticket: string): Promise<void> {
+  await toPreviewing(ticket);
+  await store.updateRun(ticket, (await store.get(ticket))!.rev, (r) => {
+    r.currentRun = { runId: 'r', attemptId: 1, kind: 'preview', pid: 1, pidStart: 's', spawnedAt: 0, sessionId: null, log: 'preview.log', ownerGen: 'gen-1' };
+  });
+}
+
+describe('Engine.routeExit — preview', () => {
+  it('preview up + gitSha match → ready, copies task.preview, loads stage9, releases the slot', async () => {
+    await previewingWithRun('PIN-1');
+    const slots = new SlotCounter(2); slots.tryReserve(); // previewing holds a slot
+    const eng = engineFull({ slots, probe: async () => ({ ok: true }),
+      outcome: async () => ({ state: 'up', gitSha: 'HEAD', url: 'https://pin-1.preview.internal', headMatches: true }),
+      loadS9: async () => ({ attemptId: 1, gitSha: 'HEAD', items: [{ n: 1, tag: 'CUT', text: 'x', acked: false }] }) });
+    await eng.routeExit('PIN-1');
+    const t = (await store.get('PIN-1'))!;
+    expect(t.phase).toBe('ready');
+    expect(t.preview).toEqual({ url: 'https://pin-1.preview.internal', gitSha: 'HEAD', state: 'up' });
+    expect(t.stage9!.items).toHaveLength(1); // ready gate now renders
+    expect(t.currentRun).toBeNull();
+    expect(slots.active).toBe(0); // released on leaving the ⊕set
+  });
+
+  it('previewing→ready with no stage9.json falls back to an empty stage9 (gate still reachable)', async () => {
+    await previewingWithRun('PIN-11');
+    const eng = engineFull({ probe: async () => ({ ok: true }),
+      outcome: async () => ({ state: 'up', gitSha: 'HEAD', url: 'https://x', headMatches: true }),
+      loadS9: async () => null });
+    await eng.routeExit('PIN-11');
+    const t = (await store.get('PIN-11'))!;
+    expect(t.phase).toBe('ready');
+    expect(t.stage9).toEqual({ attemptId: t.attempts.execute, gitSha: 'HEAD', items: [] });
+  });
+
+  it('preview exit≠0 → preview_failed, records task.preview from the (stuck) outcome', async () => {
+    await previewingWithRun('PIN-2');
+    const slots = new SlotCounter(2); slots.tryReserve();
+    const eng = engineFull({ slots, probe: async () => ({ ok: false }),
+      outcome: async () => ({ state: 'starting', gitSha: 'HEAD', url: 'https://x', headMatches: true }) });
+    await eng.routeExit('PIN-2');
+    const t = (await store.get('PIN-2'))!;
+    expect(t.phase).toBe('preview_failed');
+    expect(t.failedFrom).toBe('previewing');
+    expect(t.preview).toEqual({ url: '', gitSha: 'HEAD', state: 'starting' }); // H1: teardown can now see live compute
+    expect(slots.active).toBe(0);
+  });
+
+  it('preview up but gitSha mismatch → preview_failed', async () => {
+    await previewingWithRun('PIN-3');
+    const eng = engineFull({ probe: async () => ({ ok: true }),
+      outcome: async () => ({ state: 'up', gitSha: 'OLD', url: 'https://x', headMatches: false }) });
+    await eng.routeExit('PIN-3');
+    expect((await store.get('PIN-3'))!.phase).toBe('preview_failed');
+  });
+});
+
+describe('Engine.routeExit — closing→previewing guard (canPreview)', () => {
+  // closeout is an AGENT run; place a finished closeout in `closing`.
+  async function closingWithRun(ticket: string): Promise<void> {
+    await store.create({ ticket, title: 'T', url: 'u' });
+    await store.advance(ticket, { expectRev: 0, to: 'prepping', mutate: (r) => { r.worktree = '/wt'; r.baseSha = 'base'; } });
+    await store.advance(ticket, { expectRev: 1, to: 'awaiting_approval' });
+    await store.advance(ticket, { expectRev: 2, to: 'approved' });
+    await store.advance(ticket, { expectRev: 3, to: 'executing' });
+    await store.advance(ticket, { expectRev: 4, to: 'reviewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance(ticket, { expectRev: 5, to: 'closing', mutate: (r) => {
+      r.currentRun = { runId: 'r', attemptId: 1, kind: 'closeout', pid: 1, pidStart: 's', spawnedAt: 0, sessionId: null, log: 'closeout.jsonl', ownerGen: 'gen-1' };
+    } });
+  }
+
+  it('canPreview true → previewing (slot retained across closing→previewing)', async () => {
+    await closingWithRun('PIN-4');
+    const slots = new SlotCounter(2); slots.tryReserve();
+    const eng = engineFull({ slots, probe: async () => ({ ok: true }), canPreview: async () => true });
+    await eng.routeExit('PIN-4');
+    expect((await store.get('PIN-4'))!.phase).toBe('previewing');
+    expect(slots.active).toBe(1); // closing and previewing are both ⊕ → no release
+  });
+
+  it('canPreview false → execute_failed(failedFrom=executing), releases the slot', async () => {
+    await closingWithRun('PIN-5');
+    const slots = new SlotCounter(2); slots.tryReserve();
+    const eng = engineFull({ slots, probe: async () => ({ ok: true }), canPreview: async () => false });
+    await eng.routeExit('PIN-5');
+    const t = (await store.get('PIN-5'))!;
+    expect(t.phase).toBe('execute_failed');
+    expect(t.failedFrom).toBe('executing');
+    expect(slots.active).toBe(0);
+  });
+
+  it('canPreview that throws is treated as guard-fail (no wedged slot)', async () => {
+    await closingWithRun('PIN-6');
+    const slots = new SlotCounter(2); slots.tryReserve();
+    const eng = engineFull({ slots, probe: async () => ({ ok: true }), canPreview: async () => { throw new Error('git boom'); } });
+    await eng.routeExit('PIN-6');
+    expect((await store.get('PIN-6'))!.phase).toBe('execute_failed');
+    expect(slots.active).toBe(0);
+  });
+});
+
+describe('Engine.routeExit — prepping→awaiting_approval loads open-questions', () => {
+  async function preppingWithRun(ticket: string): Promise<void> {
+    await store.create({ ticket, title: 'T', url: 'u' });
+    await store.advance(ticket, { expectRev: 0, to: 'prepping', mutate: (r) => {
+      r.worktree = '/wt'; r.baseSha = 'base';
+      r.currentRun = { runId: 'r', attemptId: 1, kind: 'prep', pid: 1, pidStart: 's', spawnedAt: 0, sessionId: null, log: 'prep.jsonl', ownerGen: 'gen-1' };
+    } });
+  }
+
+  it('loads items with a fresh rev and clears answers', async () => {
+    await preppingWithRun('PIN-21');
+    const eng = engineFull({ probe: async () => ({ ok: true }),
+      loadOQ: async () => [{ id: 'q1', text: 'pick', kind: 'bool', required: true }] });
+    await eng.routeExit('PIN-21');
+    const t = (await store.get('PIN-21'))!;
+    expect(t.phase).toBe('awaiting_approval');
+    expect(t.openQuestions).toEqual({ rev: 1, items: [{ id: 'q1', text: 'pick', kind: 'bool', required: true }] });
+    expect(t.answers).toBeNull();
+  });
+
+  it('bumps the rev on a re-prep (monotonic) and clears prior answers', async () => {
+    await preppingWithRun('PIN-22');
+    // simulate a prior prep cycle: openQuestions rev 3 + stale answers
+    await store.updateRun('PIN-22', (await store.get('PIN-22'))!.rev, (r) => {
+      r.openQuestions = { rev: 3, items: [] };
+      r.answers = { questionsRev: 3, planAckRev: 3, values: { q1: 'old' } };
+    });
+    const eng = engineFull({ probe: async () => ({ ok: true }), loadOQ: async () => [{ id: 'q9', text: 'new', kind: 'free', required: false }] });
+    await eng.routeExit('PIN-22');
+    const t = (await store.get('PIN-22'))!;
+    expect(t.openQuestions!.rev).toBe(4); // 3 + 1
+    expect(t.answers).toBeNull();
+  });
+
+  it('null loader → empty question set (still lands awaiting_approval)', async () => {
+    await preppingWithRun('PIN-23');
+    const eng = engineFull({ probe: async () => ({ ok: true }), loadOQ: async () => null });
+    await eng.routeExit('PIN-23');
+    const t = (await store.get('PIN-23'))!;
+    expect(t.openQuestions).toEqual({ rev: 1, items: [] });
+  });
+});
+
+describe('Engine.routeExit — teardown', () => {
+  async function tearingDownWithRun(ticket: string, target: 'done' | 'abandoned' | 'queued', terminal: 'approved' | null): Promise<void> {
+    await store.create({ ticket, title: 'T', url: 'u' });
+    await store.advance(ticket, { expectRev: 0, to: 'prepping', mutate: (r) => { r.worktree = '/wt'; } });
+    await store.advance(ticket, { expectRev: 1, to: 'awaiting_approval' });
+    await store.advance(ticket, { expectRev: 2, to: 'approved' });
+    await store.advance(ticket, { expectRev: 3, to: 'executing' });
+    await store.advance(ticket, { expectRev: 4, to: 'reviewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance(ticket, { expectRev: 5, to: 'closing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance(ticket, { expectRev: 6, to: 'previewing', mutate: (r) => { r.currentRun = null; } });
+    await store.advance(ticket, { expectRev: 7, to: 'ready', mutate: (r) => { r.preview = { url: 'https://x', gitSha: 's', state: 'up' }; } });
+    await store.advance(ticket, { expectRev: 8, to: 'tearing_down', mutate: (r) => {
+      r.teardownTarget = target; if (terminal) r.terminalReason = terminal;
+      r.currentRun = { runId: 'r', attemptId: 1, kind: 'teardown', pid: 1, pidStart: 's', spawnedAt: 0, sessionId: null, log: 'teardown.log', ownerGen: 'gen-1' };
+    } });
+  }
+
+  it('teardown ok + target done → done, clears teardownTarget + preview, keeps terminalReason approved', async () => {
+    await tearingDownWithRun('PIN-7', 'done', 'approved');
+    const eng = engineFull({ probe: async () => ({ ok: true }) });
+    await eng.routeExit('PIN-7');
+    const t = (await store.get('PIN-7'))!;
+    expect(t.phase).toBe('done');
+    expect(t.terminalReason).toBe('approved');
+    expect(t.teardownTarget).toBeNull();
+    expect(t.preview).toBeNull();
+  });
+
+  it('teardown ok + target abandoned → abandoned, sets terminalReason abandoned', async () => {
+    await tearingDownWithRun('PIN-8', 'abandoned', null);
+    const eng = engineFull({ probe: async () => ({ ok: true }) });
+    await eng.routeExit('PIN-8');
+    const t = (await store.get('PIN-8'))!;
+    expect(t.phase).toBe('abandoned');
+    expect(t.terminalReason).toBe('abandoned');
+  });
+
+  it('teardown ok + target queued → queued, clears preview (re-prep)', async () => {
+    await tearingDownWithRun('PIN-9', 'queued', null);
+    const eng = engineFull({ probe: async () => ({ ok: true }) });
+    await eng.routeExit('PIN-9');
+    const t = (await store.get('PIN-9'))!;
+    expect(t.phase).toBe('queued');
+    expect(t.preview).toBeNull();
+  });
+
+  it('teardown exit≠0 → teardown_failed (no slot involved)', async () => {
+    await tearingDownWithRun('PIN-10', 'done', 'approved');
+    const slots = new SlotCounter(2); // tearing_down holds none
+    const eng = engineFull({ slots, probe: async () => ({ ok: false }) });
+    await eng.routeExit('PIN-10');
+    expect((await store.get('PIN-10'))!.phase).toBe('teardown_failed');
+    expect((await store.get('PIN-10'))!.failedFrom).toBe('tearing_down');
+    expect(slots.active).toBe(0);
+  });
+});
