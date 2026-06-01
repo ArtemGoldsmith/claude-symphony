@@ -131,6 +131,9 @@ export function renderBoard(tasks: TaskRecord[]): string {
     const cards = (byPhase.get(ph) ?? []).map(renderTaskCard).join('');
     return `<section class=col><h2>${esc(ph)}</h2>${cards}</section>`;
   }).join('');
+  // .board polls itself every 8s — htmx hx-select picks the new .board out of the
+  // fresh full-page response and outerHTML-swaps THIS .board. Add-form sits OUTSIDE
+  // .board so the operator's typing is never wiped by the swap.
   return `${pageHead('symphony')}<h1>symphony board</h1>
 <form class=add-form method=post action=/tasks>
   <h2>+ new ticket</h2>
@@ -145,7 +148,7 @@ export function renderBoard(tasks: TaskRecord[]): string {
   </label>
   <div class=add-actions><button type=submit>add to board ▸</button></div>
 </form>
-<div class=board>${cols}</div>`;
+<div class=board hx-get="/" hx-trigger="every 8s" hx-select=".board" hx-swap=outerHTML>${cols}</div>`;
 }
 
 export interface DetailFiles {
@@ -176,8 +179,16 @@ function renderDiscussLink(p: ProjectedTask, scheme: string | undefined): string
 
 export function renderDetail(t: TaskRecord, files: DetailFiles): string {
   const p = projectTask(t);
+  // Auto-refresh the detail every 8s while phase is active-run (agent owns the
+  // transitions there — operator doesn't have forms to lose). For phases with
+  // forms (awaiting_approval / ready / *_failed retry button) polling is OFF so
+  // user input isn't wiped; manual button clicks set HX-Refresh server-side to
+  // force a reload immediately after the mutation.
+  const detailPoll = isActiveRunPhase(p.phase)
+    ? ` hx-get="/tasks/${esc(p.ticket)}" hx-trigger="every 8s" hx-select=".detail" hx-swap=outerHTML`
+    : '';
   const parts: string[] = [
-    `${pageHead(`${p.ticket} · ${p.phase} — symphony`)}<div class=detail><a href="/">&larr; board</a>`,
+    `${pageHead(`${p.ticket} · ${p.phase} — symphony`)}<div class=detail${detailPoll}><a href="/">&larr; board</a>`,
     `<h1>${esc(p.ticket)} — ${esc(p.title)}</h1>`,
     `<p>phase: <b>${esc(p.phase)}</b> · rev ${p.rev}${p.failedFrom ? ` · failedFrom ${esc(p.failedFrom)}` : ''}</p>`,
     renderDiscussLink(p, files.discussUrlScheme),
