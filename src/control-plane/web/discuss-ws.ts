@@ -8,7 +8,7 @@
 
 import { upgradeWebSocket } from '@hono/node-server';
 import type { Hono, Context } from 'hono';
-import { writeFile, mkdir, stat } from 'node:fs/promises';
+import { writeFile, mkdir, readFile, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { IPty } from 'node-pty';
 import { spawn as ptySpawnReal } from 'node-pty';
@@ -85,6 +85,48 @@ export function createDiscussLease(opts: CreateDiscussLeaseOpts): DiscussLease {
     try { process.kill(pid, 0); return true; } catch { return false; }
   });
 
+  /** Pre-accept Claude Code's workspace-trust dialog for `worktree` by writing
+   *  `projects[worktree].hasTrustDialogAccepted = true` into `~/.claude.json`.
+   *  Without this, interactive `claude --continue` in a worktree path that's
+   *  not yet trusted blocks on the trust prompt — and once that prompt fires,
+   *  the --continue intent is dropped so the user lands in a fresh REPL with
+   *  "No conversation found to continue." The daemon-owned worktrees are by
+   *  construction the operator's own code, so blanket trust is appropriate.
+   *  Best-effort: any read/write failure is swallowed (claude falls back to
+   *  showing the prompt). Atomic via tmp+rename to avoid corrupting under a
+   *  concurrent claude-side write to the same file. */
+  async function ensureWorkspaceTrusted(worktree: string): Promise<void> {
+    const home = process.env.HOME;
+    if (!home) return;
+    const configPath = path.join(home, '.claude.json');
+    let cfg: Record<string, unknown>;
+    try {
+      const raw = await readFile(configPath, 'utf8');
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== 'object' || parsed === null) return;
+      cfg = parsed as Record<string, unknown>;
+    } catch { return; /* missing or malformed — claude will recreate on next run */ }
+    const projects = (cfg.projects && typeof cfg.projects === 'object')
+      ? (cfg.projects as Record<string, Record<string, unknown>>)
+      : {};
+    const existing = projects[worktree];
+    if (existing && existing.hasTrustDialogAccepted === true
+        && existing.hasClaudeMdExternalIncludesApproved === true) return;
+    projects[worktree] = {
+      ...(existing ?? {}),
+      hasTrustDialogAccepted: true,
+      // Also pre-approve external CLAUDE.md @-includes, which would otherwise
+      // trigger their own prompt on first run in a fresh worktree.
+      hasClaudeMdExternalIncludesApproved: true,
+    };
+    cfg.projects = projects;
+    const tmp = `${configPath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await writeFile(tmp, JSON.stringify(cfg, null, 2), 'utf8');
+      await rename(tmp, configPath);
+    } catch { /* best-effort — leaving original config intact */ }
+  }
+
   /** Spawn the discuss pty for `task`, writing a fresh RO settings file per spawn.
    *  Awaits any prior teardown so a supersede sequence never overlaps two ptys. */
   async function spawnPty(rec: ConnRec, task: TaskRecord): Promise<void> {
@@ -99,7 +141,10 @@ export function createDiscussLease(opts: CreateDiscussLeaseOpts): DiscussLease {
       settingsPath,
       JSON.stringify(buildDiscussSettingsJson(opts.denyGuardPath), null, 2),
     );
-    if (rec.closed) return; // re-check after the await (client may have closed)
+    // Pre-accept the workspace trust dialog so interactive claude doesn't block
+    // on it (which would also drop the --continue intent → "No conversation").
+    await ensureWorkspaceTrusted(task.worktree!);
+    if (rec.closed) return; // re-check after the awaits (client may have closed)
     const spawner = opts.ptySpawner ?? ptySpawnReal;
     const argv = ['--continue', '--settings', settingsPath, '--permission-mode', 'dontAsk'];
     const pty = spawner('claude', argv, {

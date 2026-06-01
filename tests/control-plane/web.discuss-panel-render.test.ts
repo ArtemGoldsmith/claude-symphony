@@ -27,7 +27,8 @@ const emptyFiles = { plan: '', recap: '', reviewFresh: '' };
 describe('renderDiscussPanel via renderDetail', () => {
   it('renders panel on awaiting_approval', () => {
     const html = renderDetail(seed({ phase: 'awaiting_approval' }), emptyFiles);
-    expect(html).toMatch(/<details class=discuss-panel>/);
+    // Match the opening tag with attributes (class first, optional inline style).
+    expect(html).toMatch(/<details class=discuss-panel\b/);
     expect(html).toMatch(/💬 chat with the agent/);
     expect(html).toMatch(/\/static\/xterm\/xterm\.css/);
     expect(html).toMatch(/\/tasks\/PIN-1\/discuss/);

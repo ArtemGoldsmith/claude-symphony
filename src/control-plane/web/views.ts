@@ -304,10 +304,10 @@ export function renderDiscussPanel(t: TaskRecord): string {
   if (!isDiscussAllowed(t)) return '';
   const ticket = esc(t.ticket);
   const panelId = `discuss-term-${ticket}`;
-  return `<details class=discuss-panel>
-  <summary>💬 chat with the agent</summary>
+  return `<details class=discuss-panel style="margin-top:12px;border:1px solid #2a3140;border-left:3px solid #4a9eff;border-radius:6px;background:#13171f;padding:10px 14px">
+  <summary style="cursor:pointer;font-weight:600;color:#9ab4d4;user-select:none">💬 chat with the agent</summary>
   <link rel=stylesheet href="/static/xterm/xterm.css">
-  <div id="${panelId}" style="height:480px;background:#0e1116;margin-top:8px"></div>
+  <div id="${panelId}" style="height:480px;background:#0b0e13;margin-top:10px;border:1px solid #2a3140;border-radius:4px;padding:6px"></div>
   <script>(() => {
     const root = document.currentScript.parentElement;
     let booted = false, term = null, fit = null, ws = null, resizeHandler = null;
@@ -326,7 +326,7 @@ export function renderDiscussPanel(t: TaskRecord): string {
         loadScript('/static/xterm/xterm.js'),
         loadScript('/static/xterm/addon-fit.js'),
       ]);
-      term = new window.Terminal({ fontSize: 13, theme: { background: '#0e1116' } });
+      term = new window.Terminal({ fontSize: 13, theme: { background: '#0b0e13' } });
       fit = new window.FitAddon.FitAddon();
       term.loadAddon(fit);
       term.open(document.getElementById('${panelId}'));
