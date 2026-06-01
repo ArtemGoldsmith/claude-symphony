@@ -7,6 +7,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mountRoutes, type RoutesDeps } from '../../../src/control-plane/web/routes.js';
 import { TaskStore } from '../../../src/control-plane/task-store.js';
 import type { LinearReadGateway } from '../../../src/control-plane/linear-read.js';
+import { nullDiscussLease } from '../../../src/control-plane/discuss-lease.js';
 import type { Issue } from '../../../src/linear/issue.js';
 
 let root: string;
@@ -28,7 +29,7 @@ beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'cp-routes-'));
   store = new TaskStore({ stateRoot: root, ownerGen: 'g', now: () => 100 });
   app = new Hono();
-  const deps: RoutesDeps = { store, linearRead, stateRoot: root };
+  const deps: RoutesDeps = { store, linearRead, stateRoot: root, staticRoot: root, discussLease: nullDiscussLease };
   mountRoutes(app, deps);
 });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });

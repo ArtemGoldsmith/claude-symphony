@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 
 import { loadControlPlaneConfig } from '../src/control-plane/config-loader.js';
 import { bootControlPlane } from '../src/control-plane/daemon.js';
+import { nullDiscussLease } from '../src/control-plane/discuss-lease.js';
 import { startWebServer } from '../src/control-plane/web/server.js';
 import { createLogger } from '../src/observability/log.js';
 
@@ -24,8 +25,9 @@ async function main(): Promise<void> {
   if (!token) { process.stderr.write(`fatal: ${config.web.auth_token_env} is not set\n`); process.exit(2); }
 
   const logger = createLogger({ logsRoot: config.state_root, filename: 'control-plane.log', prettyStdout: true });
-  const handle = await bootControlPlane(config, { logger, ownerGen: randomUUID() });
-  const web = startWebServer(config, { store: handle.store, linearRead: handle.linearRead, token });
+  const discussLease = nullDiscussLease; // Task 11 will swap real impl when enabled
+  const handle = await bootControlPlane(config, { logger, ownerGen: randomUUID(), discussLease });
+  const web = startWebServer(config, { store: handle.store, linearRead: handle.linearRead, token, discussLease });
   logger.info({ kind: 'web', bind: `${config.web.bind_host}:${config.web.port}` }, 'control-plane board listening');
 
   let stopping = false;

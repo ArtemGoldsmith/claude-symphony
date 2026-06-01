@@ -6,6 +6,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { createApp, type AppDeps } from '../../../src/control-plane/web/server.js';
 import { TaskStore } from '../../../src/control-plane/task-store.js';
 import type { LinearReadGateway } from '../../../src/control-plane/linear-read.js';
+import { nullDiscussLease } from '../../../src/control-plane/discuss-lease.js';
 
 let root: string;
 const linearRead: LinearReadGateway = { async fetchIssueByIdentifier() { return null; }, async listComments() { return []; } };
@@ -15,7 +16,7 @@ afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
 function build() {
   const store = new TaskStore({ stateRoot: root, ownerGen: 'g', now: () => 1 });
-  const deps: AppDeps = { store, linearRead, stateRoot: root, token: 'tok' };
+  const deps: AppDeps = { store, linearRead, stateRoot: root, staticRoot: root, discussLease: nullDiscussLease, token: 'tok' };
   return createApp(deps);
 }
 

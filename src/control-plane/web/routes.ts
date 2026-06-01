@@ -14,12 +14,16 @@ import { isTerminalPhase } from '../phase.js';
 import { StaleRevError, TaskExistsError, UnknownTaskError, type TaskStore } from '../task-store.js';
 import { taskDir } from '../task-record.js';
 import type { LinearReadGateway } from '../linear-read.js';
+import type { DiscussLease } from '../discuss-lease.js';
 import { renderBoard, renderDetail, esc } from './views.js';
+import { mountStaticAssets } from './static-assets.js';
 
 export interface RoutesDeps {
   store: TaskStore;
   linearRead: LinearReadGateway;
   stateRoot: string;
+  staticRoot: string;
+  discussLease: DiscussLease;
 }
 
 async function readOpt(p: string): Promise<string> {
@@ -141,6 +145,9 @@ async function tailPlain(logPath: string, maxLines: number): Promise<string> {
 
 export function mountRoutes(app: Hono, deps: RoutesDeps): void {
   const { store, linearRead, stateRoot } = deps;
+
+  mountStaticAssets(app, deps.staticRoot);
+  deps.discussLease.mountRoutes?.(app); // optional — nullDiscussLease omits this method
 
   app.get('/', async (c) => c.html(renderBoard(await store.list())));
 
