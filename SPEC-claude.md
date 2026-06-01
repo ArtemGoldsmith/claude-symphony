@@ -50,6 +50,13 @@ The control plane's UI is a **Hono** app serving **server-rendered HTML** with a
 
 No box-specific host, address, ticket id, or topic appears here; deployment specifics stay outside the public repo and the `scripts/check-public-invariants.sh` guard enforces it. Ticket placeholders use the `TEAM-NNN` form.
 
+**Additional web-layer routes (beyond the §9 lifecycle API):**
+
+| Route | Method | Auth | Status / behavior |
+|---|---|---|---|
+| `/static/*` | GET | cookie | Auth-required path-safe serving of vendored assets (xterm.js, xterm.css, addon-fit.js). Path traversal rejected by `joinWithinRoot`. Mime by extension. |
+| `/tasks/:ticket/discuss` | GET (WS upgrade) | cookie | Embedded discuss-with-agent terminal. Pre-upgrade gates: `web.discuss_terminal.enabled`, ticket pattern (`TEAM-NNN`), task exists, phase in {`awaiting_approval`, `ready`, `done`, `abandoned`, `*_failed` without retry-pending}, worktree on disk, no dispatching reservation on the ticket, global concurrency cap. Upgraded WS spawns `claude --continue --settings <RO-policy> --permission-mode dontAsk` in the ticket worktree under a read-only tool policy (Read/Grep/Glob allowed; Bash/Edit/Write/MultiEdit/NotebookEdit/WebFetch denied). Heartbeat 30 s ping + 60 s pong-grace; idle close after 30 min. Engine consults `DiscussLease.requireClearForDispatch(ticket)` and closes the WS with code 4003 before dispatching an agent into the same worktree. |
+
 ---
 
 ## A. Agent Runner — replaces SPEC.md §10 wholesale

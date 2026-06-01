@@ -230,6 +230,7 @@ New modules introduced by the re-scope. Lifecycle: `queued → prepping → awai
 | Config loader | 🟡 Partial | `src/control-plane/config-loader.ts` — `loadControlPlaneConfig` reads a `WORKFLOW.md`-style file via the front-matter contract |
 | Control-plane bin | 🟡 Partial | `bin/control-plane.ts` — co-hosts the daemon (lock + Engine tick loop) and the web board in one process |
 | Public-invariant grep guard | ✅ | `scripts/check-public-invariants.sh` + `tests/control-plane/public-invariants.test.ts` — fails on box/Pinley specifics or secrets in tracked files (§11/§13) |
+| Discuss-with-agent (PRE/POST gates) | 🟡 Partial | `src/control-plane/web/discuss-ws.ts` + `web/views.ts` `renderDiscussPanel` + `DiscussLease` — embedded `claude --continue` web terminal on the ticket detail page, read-only tool policy (Read/Grep/Glob only), lease-coordinated with engine dispatch (Engine consults `DiscussLease.requireClearForDispatch(ticket)` and closes WS with code 4003 before dispatching an agent into the same worktree). Opt-in via `web.discuss_terminal.enabled`. The earlier `symphony-discuss://` iTerm-flow design was removed in favour of this embedded surface |
 
 ---
 

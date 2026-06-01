@@ -42,6 +42,17 @@ web:
   # Env var NAME holding the board's bearer token (the value is supplied at
   # runtime, never committed).
   auth_token_env: SYMPHONY_BOARD_TOKEN
+  # Optional: embedded discuss-with-agent terminal on the ticket detail page.
+  # When enabled, the dashboard renders a "💬 chat with the agent" panel that
+  # opens a websocket to a read-only `claude --continue` in the ticket's
+  # worktree. Default off — opt-in.
+  discuss_terminal:
+    enabled: true
+    # idle_timeout_seconds: 1800
+    # heartbeat_seconds: 30
+    # pong_grace_seconds: 60
+    # max_concurrent_global: 4
+    # pty_kill_timeout_ms: 3000
 
 preview:
   up_script: /abs/path/to/preview-up.sh
