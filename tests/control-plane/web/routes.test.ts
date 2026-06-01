@@ -42,7 +42,7 @@ async function rev(ticket: string): Promise<string> { return String((await store
 describe('POST /tasks', () => {
   it('creates a queued task from a valid ticket', async () => {
     const res = await app.request('/tasks', form({ ticket: 'PIN-1' }));
-    expect(res.status).toBe(303);
+    expect(res.status).toBe(200); expect(res.headers.get("HX-Refresh")).toBe("true");
     expect((await store.get('PIN-1'))!.phase).toBe('queued');
   });
   it('404s an unknown ticket', async () => {
@@ -60,7 +60,7 @@ describe('POST /tasks', () => {
     await store.advance('PIN-1', { expectRev: 1, to: 'prep_failed', mutate: (r) => { r.failedFrom = 'prepping'; } });
     await store.advance('PIN-1', { expectRev: 2, to: 'abandoned', mutate: (r) => { r.terminalReason = 'abandoned'; } });
     const res = await app.request('/tasks', form({ ticket: 'PIN-1' }));
-    expect(res.status).toBe(303);
+    expect(res.status).toBe(200); expect(res.headers.get("HX-Refresh")).toBe("true");
     expect((await store.get('PIN-1'))!.phase).toBe('queued');
   });
   it('a Linear miss does NOT archive the prior terminal task', async () => {
@@ -103,7 +103,7 @@ describe('answers + approve guards', () => {
     await awaitingTask('PIN-1');
     await app.request('/tasks/PIN-1/answers', form({ questionsRev: '1', q_q1: 'yes' }));
     const res = await app.request('/tasks/PIN-1/approve', form({ planAckRev: '1', rev: await rev('PIN-1') }));
-    expect(res.status).toBe(303);
+    expect(res.status).toBe(200); expect(res.headers.get("HX-Refresh")).toBe("true");
     expect((await store.get('PIN-1'))!.phase).toBe('approved');
   });
 
@@ -120,7 +120,7 @@ describe('answers + approve guards', () => {
     await awaitingTask('PIN-1');
     await app.request('/tasks/PIN-1/answers', form({ questionsRev: '1', q_q1: 'yes' }));
     const res = await app.request('/tasks/PIN-1/reject', form({ feedback: 'redo', rev: await rev('PIN-1') }));
-    expect(res.status).toBe(303);
+    expect(res.status).toBe(200); expect(res.headers.get("HX-Refresh")).toBe("true");
     const t = (await store.get('PIN-1'))!;
     expect(t.phase).toBe('queued');
     expect(t.answers).toBeNull();
@@ -160,7 +160,7 @@ describe('ready gates', () => {
     await app.request('/tasks/PIN-1/ack', form({ items: '1' }));
     await app.request('/tasks/PIN-1/ack', form({ items: '2' }));
     const ok = await app.request('/tasks/PIN-1/approve-preview', form({ rev: await rev('PIN-1') }));
-    expect(ok.status).toBe(303);
+    expect(ok.status).toBe(200); expect(ok.headers.get('HX-Refresh')).toBe('true');
     const t = (await store.get('PIN-1'))!;
     expect(t.phase).toBe('tearing_down');
     expect(t.teardownTarget).toBe('done');
@@ -169,7 +169,7 @@ describe('ready gates', () => {
   it('request-changes → tearing_down(queued) and clears stage9+answers', async () => {
     await readyTask('PIN-1');
     const res = await app.request('/tasks/PIN-1/request-changes', form({ feedback: 'fix', rev: await rev('PIN-1') }));
-    expect(res.status).toBe(303);
+    expect(res.status).toBe(200); expect(res.headers.get("HX-Refresh")).toBe("true");
     const t = (await store.get('PIN-1'))!;
     expect(t.phase).toBe('tearing_down');
     expect(t.teardownTarget).toBe('queued');
@@ -179,7 +179,7 @@ describe('ready gates', () => {
   it('teardown from ready → tearing_down(abandoned)', async () => {
     await readyTask('PIN-1');
     const res = await app.request('/tasks/PIN-1/teardown', form({ rev: await rev('PIN-1') }));
-    expect(res.status).toBe(303);
+    expect(res.status).toBe(200); expect(res.headers.get("HX-Refresh")).toBe("true");
     expect((await store.get('PIN-1'))!.teardownTarget).toBe('abandoned');
   });
 });
@@ -190,7 +190,7 @@ describe('retry', () => {
     await store.advance('PIN-1', { expectRev: 0, to: 'prepping', mutate: (r) => { r.worktree = '/wt'; } });
     await store.advance('PIN-1', { expectRev: 1, to: 'prep_failed', mutate: (r) => { r.failedFrom = 'prepping'; } });
     const res = await app.request('/tasks/PIN-1/retry', form({ rev: await rev('PIN-1') }));
-    expect(res.status).toBe(303);
+    expect(res.status).toBe(200); expect(res.headers.get("HX-Refresh")).toBe("true");
     const t = (await store.get('PIN-1'))!;
     expect(t.phase).toBe('prep_failed'); // unchanged
     expect(t.retryRequested).toBe(true);
@@ -206,7 +206,7 @@ describe('retry', () => {
     await store.advance('PIN-1', { expectRev: 6, to: 'previewing', mutate: (r) => { r.currentRun = null; } });
     await store.advance('PIN-1', { expectRev: 7, to: 'preview_failed', mutate: (r) => { r.failedFrom = 'previewing'; } });
     const res = await app.request('/tasks/PIN-1/retry', form({ rev: await rev('PIN-1') }));
-    expect(res.status).toBe(303);
+    expect(res.status).toBe(200); expect(res.headers.get("HX-Refresh")).toBe("true");
     expect((await store.get('PIN-1'))!.retryRequested).toBe(true);
   });
 
@@ -223,7 +223,7 @@ describe('retry', () => {
     await store.advance('PIN-1', { expectRev: 8, to: 'tearing_down', mutate: (r) => { r.teardownTarget = 'done'; } });
     await store.advance('PIN-1', { expectRev: 9, to: 'teardown_failed', mutate: (r) => { r.failedFrom = 'tearing_down'; } });
     const res = await app.request('/tasks/PIN-1/retry', form({ rev: await rev('PIN-1') }));
-    expect(res.status).toBe(303);
+    expect(res.status).toBe(200); expect(res.headers.get("HX-Refresh")).toBe("true");
     expect((await store.get('PIN-1'))!.retryRequested).toBe(true);
   });
 });
