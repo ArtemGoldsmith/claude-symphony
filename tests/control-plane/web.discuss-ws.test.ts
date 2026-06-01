@@ -356,16 +356,19 @@ describe('WS lifecycle (real server + FakePty)', () => {
     await waitFor(() => FakePty.last !== null, 1000);
     const fp = FakePty.last!;
     expect(fp.file).toBe('claude');
-    expect(fp.argv.slice(0, 2)).toEqual(['--continue', '--settings']);
-    expect(fp.argv[3]).toBe('--permission-mode');
-    expect(fp.argv[4]).toBe('dontAsk');
+    // The worktree for PIN-1 in this test has no prior session on disk under
+    // ~/.claude/projects/<encoded>/, so findLatestSessionId returns null and
+    // the spawn skips --resume. The argv is just settings + permission-mode.
+    expect(fp.argv[0]).toBe('--settings');
+    expect(fp.argv[2]).toBe('--permission-mode');
+    expect(fp.argv[3]).toBe('dontAsk');
     // Settings file path lives under the configured settingsRoot.
-    expect(fp.argv[2]).toContain(path.join(root, '_discuss-settings', 'PIN-1'));
+    expect(fp.argv[1]).toContain(path.join(root, '_discuss-settings', 'PIN-1'));
     expect(fp.cwd).toBe(path.join(worktreeRoot, 'PIN-1'));
     const envKeys = Object.keys(fp.env).sort();
     expect(envKeys.every((k) => ['PATH', 'HOME', 'TERM', 'LANG', 'LC_ALL'].includes(k))).toBe(true);
     // Settings file was actually written.
-    await expect(stat(fp.argv[2]!)).resolves.toBeTruthy();
+    await expect(stat(fp.argv[1]!)).resolves.toBeTruthy();
     ws.close();
     await awaitCloseCode(ws);
   });

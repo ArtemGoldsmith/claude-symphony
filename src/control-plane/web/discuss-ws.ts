@@ -8,7 +8,7 @@
 
 import { upgradeWebSocket } from '@hono/node-server';
 import type { Hono, Context } from 'hono';
-import { writeFile, mkdir, readFile, rename, stat } from 'node:fs/promises';
+import { writeFile, mkdir, readFile, readdir, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { IPty } from 'node-pty';
 import { spawn as ptySpawnReal } from 'node-pty';
@@ -85,6 +85,34 @@ export function createDiscussLease(opts: CreateDiscussLeaseOpts): DiscussLease {
     try { process.kill(pid, 0); return true; } catch { return false; }
   });
 
+  /** Find the most-recently-modified session for `worktree` under
+   *  `~/.claude/projects/<encoded-worktree>/*.jsonl`. Returns null if the
+   *  project dir is missing or has no sessions. Used for `--resume <sid>`:
+   *  interactive `claude --continue` in a node-pty doesn't actually find the
+   *  prior session ("No conversation found to continue" even when one is on
+   *  disk and `claude -p --continue` resumes it fine — a Claude Code quirk
+   *  for the interactive path). Empirically, `--resume <explicit-sid>` works
+   *  in the same setup, so we look up the latest sid ourselves and pass it. */
+  async function findLatestSessionId(worktree: string): Promise<string | null> {
+    const home = process.env.HOME;
+    if (!home) return null;
+    // Claude encodes the CWD as project dir name: replace '/' with '-'. A
+    // leading slash becomes '-' too (verified by reading the real on-disk dir
+    // names under ~/.claude/projects/).
+    const encoded = worktree.replace(/\//g, '-');
+    const dir = path.join(home, '.claude', 'projects', encoded);
+    try {
+      const entries = await readdir(dir);
+      const jsonls = entries.filter((f) => f.endsWith('.jsonl'));
+      if (jsonls.length === 0) return null;
+      const stats = await Promise.all(
+        jsonls.map(async (f) => ({ f, mtime: (await stat(path.join(dir, f))).mtimeMs }))
+      );
+      stats.sort((a, b) => b.mtime - a.mtime);
+      return stats[0]!.f.replace(/\.jsonl$/, '');
+    } catch { return null; }
+  }
+
   /** Pre-accept Claude Code's workspace-trust dialog for `worktree` by writing
    *  `projects[worktree].hasTrustDialogAccepted = true` into `~/.claude.json`.
    *  Without this, interactive `claude --continue` in a worktree path that's
@@ -142,11 +170,18 @@ export function createDiscussLease(opts: CreateDiscussLeaseOpts): DiscussLease {
       JSON.stringify(buildDiscussSettingsJson(opts.denyGuardPath), null, 2),
     );
     // Pre-accept the workspace trust dialog so interactive claude doesn't block
-    // on it (which would also drop the --continue intent → "No conversation").
+    // on it (would also drop the --continue / --resume intent).
     await ensureWorkspaceTrusted(task.worktree!);
+    // Interactive `claude --continue` in node-pty fails to find the prior
+    // session even when -p --continue would resume it cleanly. `--resume <sid>`
+    // with an explicit session id works in the same setup. Look up the latest
+    // .jsonl mtime under ~/.claude/projects/<encoded>/ ourselves and pass it.
+    const latestSid = await findLatestSessionId(task.worktree!);
     if (rec.closed) return; // re-check after the awaits (client may have closed)
     const spawner = opts.ptySpawner ?? ptySpawnReal;
-    const argv = ['--continue', '--settings', settingsPath, '--permission-mode', 'dontAsk'];
+    const argv = latestSid
+      ? ['--resume', latestSid, '--settings', settingsPath, '--permission-mode', 'dontAsk']
+      : ['--settings', settingsPath, '--permission-mode', 'dontAsk']; // fresh REPL — no prior session
     const pty = spawner('claude', argv, {
       cwd: task.worktree!,
       env: buildDiscussEnv() as NodeJS.ProcessEnv,
