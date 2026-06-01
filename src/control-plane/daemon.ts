@@ -23,6 +23,7 @@ import { prepareWorkspace } from './intake.js';
 import { buildSettingsJson } from './settings-policy.js';
 import { createLinearReadClient, createLinearReadGateway, type LinearReadGateway } from './linear-read.js';
 import type { Phase } from './phase.js';
+import { type DiscussLease, nullDiscussLease } from './discuss-lease.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -151,6 +152,21 @@ export interface BootControlPlaneDeps {
   tickIntervalMs?: number;
   /** Injectable read gateway for tests / no-Linear boot; defaults to the real SDK gateway. */
   linearRead?: LinearReadGateway;
+  /** Engine port — default no-op. Real impl from web/discuss-ws.ts. */
+  discussLease?: DiscussLease;
+}
+
+/** Wrap a Dispatcher so each dispatch awaits `lease.requireClearForDispatch(ticket)`
+ *  before invoking `inner.dispatch`, and `releaseDispatching(ticket)` after — even on
+ *  throw. Pure function, no daemon-internal state — unit-testable in isolation. */
+export function wrapDispatcherWithLease(inner: Dispatcher, lease: DiscussLease): Dispatcher {
+  return {
+    async dispatch(args) {
+      await lease.requireClearForDispatch(args.ticket);
+      try { await inner.dispatch(args); }
+      finally { lease.releaseDispatching(args.ticket); }
+    },
+  };
 }
 
 /** The agent kinds dispatchForKind handles — exactly the config.prompts keys. */
@@ -315,11 +331,13 @@ export async function bootControlPlane(
   const linearRead =
     deps.linearRead ?? createLinearReadGateway(createLinearReadClient(config.linear.read_token_env));
 
-  const dispatcher: Dispatcher = {
+  const discussLease = deps.discussLease ?? nullDiscussLease;
+  const innerDispatcher: Dispatcher = {
     async dispatch(args) {
       await dispatchForKind(pm, store, config, linearRead, deps.logger, args);
     },
   };
+  const dispatcher = wrapDispatcherWithLease(innerDispatcher, discussLease);
 
   const probeExit = async (task: TaskRecord): Promise<{ ok: boolean } | null> => {
     const run = task.currentRun;
@@ -381,6 +399,7 @@ export async function bootControlPlane(
     stop: async () => {
       stopped = true;
       if (timer !== null) clearTimeout(timer);
+      await discussLease.shutdown();
       await lock.release();
     },
   };
