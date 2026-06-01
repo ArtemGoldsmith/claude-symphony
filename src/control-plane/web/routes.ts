@@ -46,11 +46,18 @@ function statusFor(err: unknown): ContentfulStatusCode {
   return 400;
 }
 
-/** Mark the response for htmx as "reload the current page" — used after mutation
- *  routes so the operator's view immediately reflects the new phase / state
- *  without manual refresh. Non-htmx clients see the 303 redirect as before. */
-function hxRefresh(c: { header: (k: string, v: string) => void }): void {
+/** Reply that tells htmx to do a full page reload — used after mutation routes
+ *  so the operator's view immediately reflects the new phase / state without
+ *  manual refresh. The 303 redirect pattern (set HX-Refresh header, then
+ *  c.redirect(...)) does NOT work in htmx 2.x — the redirect is followed and
+ *  swapped via hx-target=body, but the page is NOT actually reloaded (htmx
+ *  treats it as a normal swap, not a refresh). Replacing the redirect with a
+ *  bare 200 + HX-Refresh header is the htmx-canonical pattern: htmx sees the
+ *  header on any success response and calls location.reload(). Non-htmx clients
+ *  see a 200 OK with empty body (no functional impact — only htmx submits these). */
+function hxRefresh(c: import('hono').Context): Response {
   c.header('HX-Refresh', 'true');
+  return c.body(null, 200);
 }
 
 /** Truncate a string for live-feed display. */
@@ -196,7 +203,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
       // or created (TaskExistsError) the ticket → 409, never a 500.
       return c.text('create failed', statusFor(err));
     }
-    hxRefresh(c); return c.redirect('/', 303);
+    return hxRefresh(c);
   });
 
   app.post('/tasks/:id/answers', async (c) => {
@@ -237,7 +244,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
       await store.advance(id, { expectRev: formRev(body), to: 'approved',
         mutate: (r) => { if (r.answers) r.answers.planAckRev = oqRev; } });
     } catch (err) { return c.text('conflict', statusFor(err)); }
-    hxRefresh(c); return c.redirect(`/tasks/${id}`, 303);
+    return hxRefresh(c);
   });
 
   app.post('/tasks/:id/reject', async (c) => {
@@ -251,7 +258,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
       await store.advance(id, { expectRev: formRev(body), to: 'queued',
         mutate: (r) => { r.answers = null; r.rejectFeedback = feedback; } });
     } catch (err) { return c.text('conflict', statusFor(err)); }
-    hxRefresh(c); return c.redirect(`/tasks/${id}`, 303);
+    return hxRefresh(c);
   });
 
   app.post('/tasks/:id/ack', async (c) => {
@@ -267,7 +274,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
         for (const it of r.stage9.items) if (items.includes(it.n)) it.acked = true;
       });
     } catch (err) { return c.text('conflict', statusFor(err)); }
-    hxRefresh(c); return c.redirect(`/tasks/${id}`, 303);
+    return hxRefresh(c);
   });
 
   app.post('/tasks/:id/approve-preview', async (c) => {
@@ -281,7 +288,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
       await store.advance(id, { expectRev: formRev(body), to: 'tearing_down',
         mutate: (r) => { r.teardownTarget = 'done'; r.terminalReason = 'approved'; } });
     } catch (err) { return c.text('conflict', statusFor(err)); }
-    hxRefresh(c); return c.redirect(`/tasks/${id}`, 303);
+    return hxRefresh(c);
   });
 
   app.post('/tasks/:id/request-changes', async (c) => {
@@ -295,7 +302,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
       await store.advance(id, { expectRev: formRev(body), to: 'tearing_down',
         mutate: (r) => { r.teardownTarget = 'queued'; r.stage9 = null; r.answers = null; r.rejectFeedback = feedback; } });
     } catch (err) { return c.text('conflict', statusFor(err)); }
-    hxRefresh(c); return c.redirect(`/tasks/${id}`, 303);
+    return hxRefresh(c);
   });
 
   app.post('/tasks/:id/teardown', async (c) => {
@@ -313,7 +320,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
         await store.advance(id, { expectRev: formRev(body), to: 'tearing_down', mutate: (r) => { r.teardownTarget = 'abandoned'; } });
       }
     } catch (err) { return c.text('conflict', statusFor(err)); }
-    hxRefresh(c); return c.redirect(`/tasks/${id}`, 303);
+    return hxRefresh(c);
   });
 
   app.post('/tasks/:id/retry', async (c) => {
@@ -326,6 +333,6 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
     try {
       await store.updateRun(id, formRev(body), (r) => { r.retryRequested = true; });
     } catch (err) { return c.text('conflict', statusFor(err)); }
-    hxRefresh(c); return c.redirect(`/tasks/${id}`, 303);
+    return hxRefresh(c);
   });
 }
