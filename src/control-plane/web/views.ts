@@ -5,6 +5,7 @@
 
 import { ALL_PHASES, isActiveRunPhase, type Phase } from '../phase.js';
 import type { TaskRecord } from '../task-record.js';
+import { isDiscussAllowed } from './discuss-ws.js';
 
 export function esc(s: string): string {
   return s
@@ -190,6 +191,7 @@ export function renderDetail(t: TaskRecord, files: DetailFiles): string {
     `<p>phase: <b>${esc(p.phase)}</b> · rev ${p.rev}${p.failedFrom ? ` · failedFrom ${esc(p.failedFrom)}` : ''}</p>`,
     p.operatorNote ? `<div class=op-note><h3>operator note</h3><div class=body>${esc(p.operatorNote)}</div></div>` : '',
     isActiveRunPhase(p.phase) ? `<div class=live-block><h3><span class=dot></span> live · ${esc(p.phase)}</h3><div id=live-feed hx-get="/tasks/${esc(p.ticket)}/live" hx-trigger="load, every 4s" hx-swap=innerHTML><p class=feed-empty>connecting…</p></div></div>` : '',
+    renderDiscussPanel(t),
     `<p><a href="${esc(p.url)}" target=_blank rel=noopener>Linear ticket</a></p>`,
   ];
   if (files.plan) parts.push(`<h2>plan</h2><pre>${esc(files.plan)}</pre>`);
@@ -283,6 +285,82 @@ function renderStage9(p: ProjectedTask): string {
 <form hx-post="/tasks/${esc(p.ticket)}/request-changes" hx-target=body style="margin-top:.5rem">
 <input type=hidden name=rev value="${p.rev}"><input name=feedback placeholder="what to change" style="width:100%"><button>request changes</button></form>
 <form hx-post="/tasks/${esc(p.ticket)}/teardown" hx-target=body style="margin-top:.5rem"><input type=hidden name=rev value="${p.rev}"><button>teardown (abandon)</button></form>`;
+}
+
+/**
+ * Detail-page panel for the embedded discuss-with-agent terminal. Server-renders
+ * a collapsible <details>; the inline <script> lazy-loads vendored xterm.js +
+ * addon-fit on first open, connects WS, and fully tears down on close.
+ *
+ * Hidden by isDiscussAllowed when the phase / state forbids discussion (see
+ * spec §6).
+ *
+ * Loader strategy: vendored xterm.js is a UMD bundle (attaches window.Terminal
+ * and window.FitAddon as side effects), so we inject classic <script> tags
+ * instead of using ES dynamic import() — UMD does not export anything an ESM
+ * import can bind to.
+ */
+export function renderDiscussPanel(t: TaskRecord): string {
+  if (!isDiscussAllowed(t)) return '';
+  const ticket = esc(t.ticket);
+  const panelId = `discuss-term-${ticket}`;
+  return `<details class=discuss-panel>
+  <summary>💬 chat with the agent</summary>
+  <link rel=stylesheet href="/static/xterm/xterm.css">
+  <div id="${panelId}" style="height:480px;background:#0e1116;margin-top:8px"></div>
+  <script>(() => {
+    const root = document.currentScript.parentElement;
+    let booted = false, term = null, fit = null, ws = null, resizeHandler = null;
+
+    function loadScript(src) {
+      return new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = src; s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+
+    async function boot() {
+      booted = true;
+      await Promise.all([
+        loadScript('/static/xterm/xterm.js'),
+        loadScript('/static/xterm/addon-fit.js'),
+      ]);
+      term = new window.Terminal({ fontSize: 13, theme: { background: '#0e1116' } });
+      fit = new window.FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open(document.getElementById('${panelId}'));
+      fit.fit();
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(\`\${proto}//\${location.host}/tasks/${ticket}/discuss\`);
+      ws.binaryType = 'arraybuffer';
+      ws.onmessage = (e) => { if (e.data instanceof ArrayBuffer) term.write(new Uint8Array(e.data)); };
+      term.onData((data) => { if (ws && ws.readyState === 1) ws.send(new TextEncoder().encode(data)); });
+      const sendResize = () => {
+        if (!fit || !ws) return;
+        fit.fit();
+        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      };
+      ws.onopen = sendResize;
+      resizeHandler = sendResize;
+      window.addEventListener('resize', resizeHandler);
+    }
+
+    function teardown() {
+      if (ws && ws.readyState !== 3) { try { ws.close(); } catch (_) {} }
+      if (resizeHandler) { window.removeEventListener('resize', resizeHandler); }
+      if (term) { try { term.dispose(); } catch (_) {} }
+      term = fit = ws = resizeHandler = null;
+      booted = false;
+    }
+
+    root.addEventListener('toggle', () => {
+      if (root.open && !booted) boot().catch((e) => console.error('discuss-panel boot:', e));
+      else if (!root.open && booted) teardown();
+    });
+    window.addEventListener('beforeunload', () => { if (booted) teardown(); });
+  })();</script>
+</details>`;
 }
 
 function renderRetry(p: ProjectedTask): string {
