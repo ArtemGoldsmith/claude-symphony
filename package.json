@@ -48,14 +48,17 @@
     "@linear/sdk": "^39.0.0",
     "gray-matter": "^4.0.3",
     "hono": "^4.12.23",
+    "node-pty": "^1.1.0",
     "pino": "^9.5.0",
     "pino-pretty": "^11.3.0",
     "proper-lockfile": "^4.1.2",
+    "ws": "^8.21.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/proper-lockfile": "^4.1.4",
+    "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^2.1.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
@@ -63,5 +66,10 @@
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "node-pty"
+    ]
   }
 }
