@@ -10,6 +10,7 @@ export interface ClaudeSettings {
   permissions: {
     /** "default" keeps allow/deny rules in force under --permission-mode. */
     defaultMode?: string;
+    allow?: string[];
     deny: string[];
   };
   hooks?: {
