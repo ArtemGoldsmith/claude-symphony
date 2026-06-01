@@ -72,3 +72,55 @@ export function buildSettingsJson(guardScriptPath = 'scripts/pretooluse-guard.sh
     },
   };
 }
+
+const DISCUSS_ALLOW: readonly string[] = ['Read', 'Grep', 'Glob'];
+const DISCUSS_DENY: readonly string[] = [
+  'Bash', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit',
+  'WebFetch', 'WebSearch', 'Agent',
+  // Defense-in-depth: known dangerous/extension tools. Future tools not on
+  // `allow` are auto-denied under --permission-mode dontAsk regardless.
+  'PowerShell', 'Skill', 'Workflow',
+];
+const DISCUSS_MATCHER =
+  'Bash|Edit|Write|MultiEdit|NotebookEdit|WebFetch|WebSearch|Agent|PowerShell|Skill|Workflow';
+
+/**
+ * Read-only settings for `claude --continue` from the dashboard discuss
+ * terminal. Primary safety: allowlist (Read/Grep/Glob) + --permission-mode
+ * dontAsk auto-denies anything not on allow, including future tools. Deny list
+ * + PreToolUse hook are defense-in-depth.
+ *
+ * `absGuardPath` MUST be absolute — Claude Code resolves the hook command at
+ * runtime against the worktree cwd, so a relative path would fail-open.
+ */
+export function buildDiscussSettingsJson(absGuardPath: string): ClaudeSettings {
+  if (!absGuardPath.startsWith('/')) {
+    throw new Error(`buildDiscussSettingsJson: absGuardPath must be absolute, got ${absGuardPath}`);
+  }
+  return {
+    permissions: {
+      defaultMode: 'default',
+      allow: [...DISCUSS_ALLOW],
+      deny: [...DISCUSS_DENY],
+    },
+    hooks: {
+      PreToolUse: [
+        { matcher: DISCUSS_MATCHER, hooks: [{ type: 'command', command: absGuardPath }] },
+      ],
+    },
+  };
+}
+
+const DISCUSS_ENV_KEYS: readonly string[] = ['PATH', 'HOME', 'TERM', 'LANG', 'LC_ALL'];
+
+/** Env for `claude --continue` from discuss — strips Linear/Anthropic/all extras.
+ *  Returns only keys necessary for claude to find its keychain creds (HOME) and
+ *  render in a terminal. */
+export function buildDiscussEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of DISCUSS_ENV_KEYS) {
+    const v = source[k];
+    if (typeof v === 'string') out[k] = v;
+  }
+  return out;
+}
