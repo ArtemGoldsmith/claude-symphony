@@ -38,6 +38,28 @@ export const ControlPlaneConfigSchema = z
       }).default('127.0.0.1'),
       port: z.number().int().positive().default(8787),
       auth_token_env: NonEmpty,
+      // Discuss terminal (Plan 5): opt-in PTY-over-WebSocket surface for the
+      // tasks board. Disabled by default; the daemon refuses to spawn until
+      // enabled=true. Limits below cap RAM/CPU and bound idle sessions (§9).
+      discuss_terminal: z
+        .object({
+          enabled: z.boolean().default(false),
+          idle_timeout_seconds: z.number().int().positive().default(1800),
+          heartbeat_seconds: z.number().int().positive().default(30),
+          pong_grace_seconds: z.number().int().positive().default(60),
+          max_concurrent_global: z.number().int().positive().default(4),
+          pty_kill_timeout_ms: z.number().int().positive().default(3000),
+          allow_writes: z.boolean().default(false),
+        })
+        .default({
+          enabled: false,
+          idle_timeout_seconds: 1800,
+          heartbeat_seconds: 30,
+          pong_grace_seconds: 60,
+          max_concurrent_global: 4,
+          pty_kill_timeout_ms: 3000,
+          allow_writes: false,
+        }),
     }),
     preview: z.object({
       up_script: NonEmpty,

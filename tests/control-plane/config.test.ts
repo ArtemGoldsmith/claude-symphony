@@ -95,4 +95,45 @@ describe('parseControlPlaneConfig', () => {
     const ok = { ...MIN, preview: { ...MIN.preview, extra_env: ['DOCKER_HOST', 'COLIMA_HOME'] } };
     expect(parseControlPlaneConfig(ok).preview.extra_env).toEqual(['DOCKER_HOST', 'COLIMA_HOME']);
   });
+
+  describe('web.discuss_terminal', () => {
+    it('applies defaults when omitted', () => {
+      const c = parseControlPlaneConfig(MIN);
+      expect(c.web.discuss_terminal).toEqual({
+        enabled: false,
+        idle_timeout_seconds: 1800,
+        heartbeat_seconds: 30,
+        pong_grace_seconds: 60,
+        max_concurrent_global: 4,
+        pty_kill_timeout_ms: 3000,
+        allow_writes: false,
+      });
+    });
+
+    it('rejects max_concurrent_global = 0', () => {
+      expect(() =>
+        parseControlPlaneConfig({
+          ...MIN,
+          web: { ...MIN.web, discuss_terminal: { max_concurrent_global: 0 } },
+        }),
+      ).toThrow();
+    });
+
+    it('rejects negative idle_timeout_seconds', () => {
+      expect(() =>
+        parseControlPlaneConfig({
+          ...MIN,
+          web: { ...MIN.web, discuss_terminal: { idle_timeout_seconds: -1 } },
+        }),
+      ).toThrow();
+    });
+
+    it('accepts enabled=true', () => {
+      const c = parseControlPlaneConfig({
+        ...MIN,
+        web: { ...MIN.web, discuss_terminal: { enabled: true } },
+      });
+      expect(c.web.discuss_terminal.enabled).toBe(true);
+    });
+  });
 });
