@@ -116,6 +116,27 @@ button{cursor:pointer}
 @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 .live-feed{background:#0f1115;border:1px solid #232938;border-radius:.3rem;padding:.55rem .7rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.78rem;line-height:1.45;max-height:24rem;overflow-y:auto;margin:0;color:#c4cbdb;white-space:pre-wrap;word-break:break-word}
 .feed-empty{color:#5f677a;font-size:.82rem;font-style:italic;margin:0}
+/* Awaiting-approval gate — three-card layout (questions | approve | reject) with clear hierarchy */
+.gate-block{margin:1.25rem 0}
+.gate-block h2{margin:0 0 .25rem;font-size:1.05rem;color:#e6e6e6}
+.gate-block h2 .phase-hint{font-size:.7rem;font-weight:normal;color:#5f677a;text-transform:uppercase;letter-spacing:.05em;margin-left:.5rem}
+.gate-hint{margin:0 0 1rem;color:#aeb6c8;font-size:.88rem;line-height:1.5;background:#1a1f2a;border-left:3px solid #7aa2f7;padding:.6rem .85rem;border-radius:.3rem}
+.gate-card{background:#171a21;border:1px solid #232938;border-radius:.5rem;padding:.85rem 1rem;margin:.75rem 0}
+.gate-card h3{margin:0 0 .35rem;font-size:.92rem;color:#e6e6e6;font-weight:600}
+.gate-card h3 .rev{font-size:.7rem;color:#5f677a;font-weight:normal;margin-left:.3rem}
+.gate-card .gate-sub{margin:0 0 .65rem;color:#8b93a7;font-size:.8rem;line-height:1.4}
+.gate-card .gate-sub code{background:#0f1115;padding:.05rem .35rem;border-radius:.2rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.78rem}
+.gate-q{margin:.55rem 0}
+.gate-q-text{display:block;font-size:.85rem;color:#c4cbdb;margin-bottom:.3rem}
+.gate-q .req{color:#f7768e}
+.gate-input{width:100%;box-sizing:border-box;padding:.5rem .7rem;background:#0f1115;border:1px solid #2a3144;border-radius:.35rem;color:#e6e6e6;font-family:inherit;font-size:.85rem;line-height:1.45}
+.gate-input:focus{outline:none;border-color:#7aa2f7;box-shadow:0 0 0 2px rgba(122,162,247,.18)}
+.ack-label{display:flex;align-items:center;gap:.4rem;font-size:.85rem;color:#c4cbdb;margin-bottom:.5rem;cursor:pointer}
+.ack-label input{cursor:pointer}
+.btn-primary{background:#7aa2f7;color:#0f1115;border:none;padding:.55rem 1.1rem;border-radius:.4rem;font-weight:600;font-size:.85rem;cursor:pointer;transition:background .15s}
+.btn-primary:hover{background:#9bb5ff}
+.btn-secondary{background:#222732;color:#c4cbdb;border:1px solid #2a3144;padding:.5rem 1rem;border-radius:.4rem;font-size:.83rem;cursor:pointer;transition:all .15s;margin-top:.45rem}
+.btn-secondary:hover{background:#2a3144;border-color:#3a4258}
 `;
 
 export function renderTaskCard(t: TaskRecord): string {
@@ -211,27 +232,64 @@ export function renderDetail(t: TaskRecord, files: DetailFiles): string {
 
 function renderAnswerForm(p: ProjectedTask): string {
   const oq = p.openQuestions!;
+  const hasItems = oq.items.length > 0;
   const fields = oq.items.map((q) => {
     const name = `q_${esc(q.id)}`;
     let input: string;
     if (q.kind === 'choice' && q.options) {
-      input = `<select name="${name}">${q.options.map((o) => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`;
+      input = `<select class=gate-input name="${name}">${q.options.map((o) => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`;
     } else if (q.kind === 'bool') {
-      input = `<select name="${name}"><option value=yes>yes</option><option value=no>no</option></select>`;
+      input = `<select class=gate-input name="${name}"><option value=yes>yes</option><option value=no>no</option></select>`;
     } else {
-      input = `<textarea name="${name}" rows=2 style="width:100%"></textarea>`;
+      input = `<textarea class=gate-input name="${name}" rows=2></textarea>`;
     }
-    return `<p><label>${esc(q.text)}${q.required ? ' *' : ''}<br>${input}</label></p>`;
+    return `<p class=gate-q><label><span class=gate-q-text>${esc(q.text)}${q.required ? ' <span class=req>*</span>' : ''}</span>${input}</label></p>`;
   }).join('');
-  return `<h2>open questions (rev ${oq.rev})</h2>
-<form hx-post="/tasks/${esc(p.ticket)}/answers" hx-swap=none>
-<input type=hidden name=questionsRev value="${oq.rev}">${fields}<button>save answers</button></form>
-<form hx-post="/tasks/${esc(p.ticket)}/approve" hx-target=body style="margin-top:.5rem">
-<input type=hidden name=rev value="${p.rev}"><input type=hidden name=planAckRev value="${oq.rev}">
-<label><input type=checkbox name=ack required> I have reviewed the plan</label>
-<button>approve</button></form>
-<form hx-post="/tasks/${esc(p.ticket)}/reject" hx-target=body style="margin-top:.5rem">
-<input type=hidden name=rev value="${p.rev}"><input name=feedback placeholder="why reject" style="width:100%"><button>reject &amp; re-prep</button></form>`;
+
+  // "What do I do now?" guidance — shown above the gates because the operator
+  // landing on awaiting_approval needs a clear next-step framing.
+  const noQuestionsHint = !hasItems
+    ? `<p class=gate-hint>The agent flagged <b>no specific questions</b> for you — read the plan above, then either <b>approve</b> to send it to execute, or <b>reject &amp; re-prep</b> with feedback if the plan is off direction. If you want to chat about the plan first, use the <b>💬 discuss this ticket locally</b> link near the top.</p>`
+    : `<p class=gate-hint>The agent asked the questions below. Answer the required ones (*) before approving, or <b>reject &amp; re-prep</b> with feedback if the whole direction is off.</p>`;
+
+  // Three gates, visually separated as cards.
+  const questionsCard = hasItems
+    ? `<div class=gate-card>
+  <h3>1. answer open questions <span class=rev>(rev ${oq.rev})</span></h3>
+  <form hx-post="/tasks/${esc(p.ticket)}/answers" hx-swap=none>
+    <input type=hidden name=questionsRev value="${oq.rev}">${fields}
+    <button class=btn-secondary>save answers</button>
+  </form>
+</div>`
+    : '';
+
+  const approveCard = `<div class=gate-card>
+  <h3>${hasItems ? '2. ' : ''}approve plan</h3>
+  <p class=gate-sub>Confirms you reviewed the plan at <code>rev ${oq.rev}</code>; sends the task to <code>executing</code>.</p>
+  <form hx-post="/tasks/${esc(p.ticket)}/approve" hx-target=body>
+    <input type=hidden name=rev value="${p.rev}"><input type=hidden name=planAckRev value="${oq.rev}">
+    <label class=ack-label><input type=checkbox name=ack required> I have reviewed the plan above</label>
+    <button class=btn-primary>approve →</button>
+  </form>
+</div>`;
+
+  const rejectCard = `<div class=gate-card>
+  <h3>${hasItems ? '3. ' : ''}reject &amp; re-prep</h3>
+  <p class=gate-sub>Sends the task back to <code>queued</code>; the prep agent re-plans incorporating your feedback below.</p>
+  <form hx-post="/tasks/${esc(p.ticket)}/reject" hx-target=body>
+    <input type=hidden name=rev value="${p.rev}">
+    <textarea class=gate-input name=feedback rows=3 placeholder="why reject — what to change in the next plan"></textarea>
+    <button class=btn-secondary>reject &amp; re-prep</button>
+  </form>
+</div>`;
+
+  return `<div class=gate-block>
+  <h2>your decision <span class=phase-hint>(phase: awaiting_approval)</span></h2>
+  ${noQuestionsHint}
+  ${questionsCard}
+  ${approveCard}
+  ${rejectCard}
+</div>`;
 }
 
 function renderStage9(p: ProjectedTask): string {
