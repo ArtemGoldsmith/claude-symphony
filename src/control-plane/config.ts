@@ -38,6 +38,14 @@ export const ControlPlaneConfigSchema = z
       }).default('127.0.0.1'),
       port: z.number().int().positive().default(8787),
       auth_token_env: NonEmpty,
+      // Optional URL scheme the detail view emits as a "discuss locally" link
+      // (e.g. "symphony-discuss"). Off by default — opt-in deployment-specific
+      // affordance. The receiver lives on the operator's laptop (custom URL
+      // handler), not in this repo. Strict alphanumeric+-+ for the scheme part
+      // so the rendered href can't be turned into javascript:/data:/etc.
+      discuss_url_scheme: z.string().regex(/^[a-z][a-z0-9+-]*$/, {
+        message: 'web.discuss_url_scheme must be lowercase scheme syntax (a-z, 0-9, +, -)',
+      }).optional(),
     }),
     preview: z.object({
       up_script: NonEmpty,

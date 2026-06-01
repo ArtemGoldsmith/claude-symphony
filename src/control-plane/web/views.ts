@@ -105,6 +105,10 @@ button{cursor:pointer}
 .op-note{background:#1a1f2a;border-left:3px solid #7aa2f7;padding:.55rem .8rem;border-radius:.3rem;margin:.6rem 0}
 .op-note h3{margin:0 0 .35rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:#8b93a7}
 .op-note .body{margin:0;font-family:inherit;white-space:pre-wrap;color:#e6e6e6;font-size:.88rem;line-height:1.45}
+/* "discuss locally" pill — opt-in, only emitted when web.discuss_url_scheme is set in config */
+.discuss-link{display:inline-flex;align-items:center;gap:.35rem;background:#1a1f2a;border:1px solid #2a3144;border-radius:99px;padding:.35rem .9rem;color:#7aa2f7;text-decoration:none;font-size:.82rem;font-weight:500;margin:.4rem 0;transition:all .15s}
+.discuss-link:hover{background:#222732;border-color:#7aa2f7;color:#9bb5ff}
+.discuss-link .chat{font-size:.95rem}
 `;
 
 export function renderTaskCard(t: TaskRecord): string {
@@ -137,7 +141,31 @@ export function renderBoard(tasks: TaskRecord[]): string {
 <div class=board>${cols}</div>`;
 }
 
-export interface DetailFiles { plan: string; recap: string; reviewFresh: string; }
+export interface DetailFiles {
+  plan: string;
+  recap: string;
+  reviewFresh: string;
+  /** Optional URL scheme (e.g. "symphony-discuss") — if set, render a "discuss
+   *  locally" link that the operator's laptop URL-handler picks up. Off → no link. */
+  discussUrlScheme?: string;
+}
+
+/**
+ * "Discuss locally" affordance — emits a custom-URL-scheme link the operator's
+ * laptop URL-handler picks up. Only rendered when web.discuss_url_scheme is set
+ * (off by default). The scheme regex (config-side) is strict so ticket+phase
+ * params can't be turned into javascript:/data: hrefs.
+ *
+ * Phase is informational ("pre" before commits ship; "post" after) — the
+ * laptop-side helper pulls whatever artifacts exist regardless.
+ */
+function renderDiscussLink(p: ProjectedTask, scheme: string | undefined): string {
+  if (!scheme) return '';
+  const POST_PHASES: ReadonlySet<Phase> = new Set<Phase>(['ready', 'done', 'abandoned']);
+  const phase = POST_PHASES.has(p.phase) ? 'post' : 'pre';
+  const label = phase === 'post' ? 'discuss results locally' : 'discuss this ticket locally';
+  return `<a class=discuss-link href="${esc(scheme)}://${esc(p.ticket)}?phase=${phase}"><span class=chat>💬</span> ${label}</a>`;
+}
 
 export function renderDetail(t: TaskRecord, files: DetailFiles): string {
   const p = projectTask(t);
@@ -145,6 +173,7 @@ export function renderDetail(t: TaskRecord, files: DetailFiles): string {
     `${pageHead(`${p.ticket} · ${p.phase} — symphony`)}<div class=detail><a href="/">&larr; board</a>`,
     `<h1>${esc(p.ticket)} — ${esc(p.title)}</h1>`,
     `<p>phase: <b>${esc(p.phase)}</b> · rev ${p.rev}${p.failedFrom ? ` · failedFrom ${esc(p.failedFrom)}` : ''}</p>`,
+    renderDiscussLink(p, files.discussUrlScheme),
     p.operatorNote ? `<div class=op-note><h3>operator note</h3><div class=body>${esc(p.operatorNote)}</div></div>` : '',
     `<p><a href="${esc(p.url)}" target=_blank rel=noopener>Linear ticket</a></p>`,
   ];

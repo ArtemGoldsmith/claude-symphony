@@ -28,7 +28,13 @@ export function startWebServer(
   config: ControlPlaneConfig,
   deps: { store: TaskStore; linearRead: LinearReadGateway; token: string },
 ): WebServer {
-  const app = createApp({ store: deps.store, linearRead: deps.linearRead, stateRoot: config.state_root, token: deps.token });
+  const app = createApp({
+    store: deps.store,
+    linearRead: deps.linearRead,
+    stateRoot: config.state_root,
+    token: deps.token,
+    ...(config.web.discuss_url_scheme ? { discussUrlScheme: config.web.discuss_url_scheme } : {}),
+  });
   const server = serve({ fetch: app.fetch, hostname: config.web.bind_host, port: config.web.port });
   return { close: () => new Promise<void>((res) => server.close(() => res())) };
 }

@@ -20,6 +20,9 @@ export interface RoutesDeps {
   store: TaskStore;
   linearRead: LinearReadGateway;
   stateRoot: string;
+  /** Optional URL scheme from config.web.discuss_url_scheme — forwarded into
+   *  the detail render so the "discuss locally" link is opt-in per deployment. */
+  discussUrlScheme?: string;
 }
 
 async function readOpt(p: string): Promise<string> {
@@ -44,7 +47,7 @@ function statusFor(err: unknown): ContentfulStatusCode {
 }
 
 export function mountRoutes(app: Hono, deps: RoutesDeps): void {
-  const { store, linearRead, stateRoot } = deps;
+  const { store, linearRead, stateRoot, discussUrlScheme } = deps;
 
   app.get('/', async (c) => c.html(renderBoard(await store.list())));
 
@@ -56,6 +59,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
       plan: await readOpt(path.join(dir, 'plan.md')),
       recap: await readOpt(path.join(dir, 'recap.md')),
       reviewFresh: await readOpt(path.join(dir, 'review-fresh.md')),
+      ...(discussUrlScheme ? { discussUrlScheme } : {}),
     }));
   });
 
