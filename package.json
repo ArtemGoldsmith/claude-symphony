@@ -40,7 +40,8 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "postinstall": "bash scripts/fix-node-pty-perms.sh"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.0",

@@ -225,7 +225,14 @@ export function createDiscussLease(opts: CreateDiscussLeaseOpts): DiscussLease {
             conns.set(ticket, rec);
             // Pong listener tracks heartbeat liveness.
             rawWs.on('pong', () => { if (rec) rec.lastPong = Date.now(); });
-            void spawnPty(rec, task);
+            // Spawn errors (claude binary missing, pty perms, env busted) MUST NOT
+            // bubble as unhandled rejections — they'd crash the daemon under
+            // LaunchDaemon. Surface to the client via WS close code 4002 instead.
+            const recForCatch = rec;
+            spawnPty(rec, task).catch((err: unknown) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              void closeRec(recForCatch, 4002, `pty spawn failed: ${msg}`);
+            });
             startHeartbeat(rec);
           },
           onMessage(evt, _ws) {
