@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import { WebSocketServer } from 'ws';
 
 import type { ControlPlaneConfig } from '../config.js';
 import type { LinearReadGateway } from '../linear-read.js';
@@ -30,7 +31,10 @@ export interface WebServer { close: () => Promise<void>; }
 
 export function startWebServer(
   config: ControlPlaneConfig,
-  deps: { store: TaskStore; linearRead: LinearReadGateway; token: string; discussLease?: DiscussLease },
+  deps: {
+    store: TaskStore; linearRead: LinearReadGateway; token: string;
+    discussLease?: DiscussLease; cfg?: ControlPlaneConfig['web'];
+  },
 ): WebServer {
   const staticRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'static');
   const app = createApp({
@@ -41,6 +45,17 @@ export function startWebServer(
     staticRoot,
     discussLease: deps.discussLease ?? nullDiscussLease,
   });
-  const server = serve({ fetch: app.fetch, hostname: config.web.bind_host, port: config.web.port });
+  // WS upgrade lane: when discuss_terminal is enabled, @hono/node-server's adapter
+  // needs a `ws.WebSocketServer({ noServer: true })` so server.on('upgrade') routes
+  // into our `upgradeWebSocket` route (mounted via discussLease.mountRoutes).
+  const wss = config.web.discuss_terminal.enabled
+    ? new WebSocketServer({ noServer: true })
+    : undefined;
+  const server = serve({
+    fetch: app.fetch,
+    hostname: config.web.bind_host,
+    port: config.web.port,
+    ...(wss ? { websocket: { server: wss } } : {}),
+  });
   return { close: () => new Promise<void>((res) => server.close(() => res())) };
 }

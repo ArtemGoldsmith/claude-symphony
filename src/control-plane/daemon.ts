@@ -154,6 +154,9 @@ export interface BootControlPlaneDeps {
   linearRead?: LinearReadGateway;
   /** Engine port — default no-op. Real impl from web/discuss-ws.ts. */
   discussLease?: DiscussLease;
+  /** TaskStore is created in bin/control-plane.ts so the discuss lease can be
+   *  constructed against the SAME store instance the daemon will mutate. */
+  store: TaskStore;
 }
 
 /** Wrap a Dispatcher so each dispatch awaits `lease.requireClearForDispatch(ticket)`
@@ -318,7 +321,7 @@ export async function bootControlPlane(
   });
   await lock.acquire();
 
-  const store = new TaskStore({ stateRoot: config.state_root, ownerGen: deps.ownerGen, now: deps.now });
+  const { store } = deps;
   const slots = new SlotCounter(config.agent.max_concurrent_agents);
   const pm = new ProcessManager({
     stateRoot: config.state_root,
