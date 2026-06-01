@@ -3,7 +3,7 @@
 // (spec §9/§17): only operator-safe fields reach the browser. Markdown files
 // are shown inside an escaped <pre> (no markdown-renderer dep — YAGNI).
 
-import { ALL_PHASES, type Phase } from '../phase.js';
+import { ALL_PHASES, isActiveRunPhase, type Phase } from '../phase.js';
 import type { TaskRecord } from '../task-record.js';
 
 export function esc(s: string): string {
@@ -109,6 +109,13 @@ button{cursor:pointer}
 .discuss-link{display:inline-flex;align-items:center;gap:.35rem;background:#1a1f2a;border:1px solid #2a3144;border-radius:99px;padding:.35rem .9rem;color:#7aa2f7;text-decoration:none;font-size:.82rem;font-weight:500;margin:.4rem 0;transition:all .15s}
 .discuss-link:hover{background:#222732;border-color:#7aa2f7;color:#9bb5ff}
 .discuss-link .chat{font-size:.95rem}
+/* Live feed — htmx-polled tail of the running agent/script log */
+.live-block{background:#171a21;border-radius:.4rem;padding:.6rem .8rem;margin:.6rem 0}
+.live-block h3{margin:0 0 .4rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8b93a7;display:flex;align-items:center;gap:.4rem}
+.live-block h3 .dot{width:.5rem;height:.5rem;border-radius:50%;background:#7aa2f7;animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+.live-feed{background:#0f1115;border:1px solid #232938;border-radius:.3rem;padding:.55rem .7rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.78rem;line-height:1.45;max-height:24rem;overflow-y:auto;margin:0;color:#c4cbdb;white-space:pre-wrap;word-break:break-word}
+.feed-empty{color:#5f677a;font-size:.82rem;font-style:italic;margin:0}
 `;
 
 export function renderTaskCard(t: TaskRecord): string {
@@ -175,6 +182,7 @@ export function renderDetail(t: TaskRecord, files: DetailFiles): string {
     `<p>phase: <b>${esc(p.phase)}</b> · rev ${p.rev}${p.failedFrom ? ` · failedFrom ${esc(p.failedFrom)}` : ''}</p>`,
     renderDiscussLink(p, files.discussUrlScheme),
     p.operatorNote ? `<div class=op-note><h3>operator note</h3><div class=body>${esc(p.operatorNote)}</div></div>` : '',
+    isActiveRunPhase(p.phase) ? `<div class=live-block><h3><span class=dot></span> live · ${esc(p.phase)}</h3><div id=live-feed hx-get="/tasks/${esc(p.ticket)}/live" hx-trigger="load, every 4s" hx-swap=innerHTML><p class=feed-empty>connecting…</p></div></div>` : '',
     `<p><a href="${esc(p.url)}" target=_blank rel=noopener>Linear ticket</a></p>`,
   ];
   if (files.plan) parts.push(`<h2>plan</h2><pre>${esc(files.plan)}</pre>`);

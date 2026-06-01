@@ -14,7 +14,7 @@ import { isTerminalPhase } from '../phase.js';
 import { StaleRevError, TaskExistsError, UnknownTaskError, type TaskStore } from '../task-store.js';
 import { taskDir } from '../task-record.js';
 import type { LinearReadGateway } from '../linear-read.js';
-import { renderBoard, renderDetail } from './views.js';
+import { renderBoard, renderDetail, esc } from './views.js';
 
 export interface RoutesDeps {
   store: TaskStore;
@@ -46,10 +46,112 @@ function statusFor(err: unknown): ContentfulStatusCode {
   return 400;
 }
 
+/** Truncate a string for live-feed display. */
+function trunc(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n - 1) + '…';
+}
+
+/** Summarise tool_use input for the live feed — readable, never the full args. */
+function summariseToolInput(name: string, input: Record<string, unknown>): string {
+  if (name === 'Bash' && typeof input.command === 'string') return trunc(input.command, 90);
+  if ((name === 'Read' || name === 'Edit' || name === 'Write') && typeof input.file_path === 'string') {
+    return path.basename(input.file_path);
+  }
+  if (name === 'Grep' && typeof input.pattern === 'string') return `/${trunc(input.pattern, 60)}/`;
+  if (name === 'Glob' && typeof input.pattern === 'string') return input.pattern;
+  if (name === 'TodoWrite') return '<todos>';
+  if (name === 'Task' && typeof input.description === 'string') return trunc(input.description, 80);
+  const k = Object.keys(input).slice(0, 2);
+  return k.length > 0 ? k.join(',') : '';
+}
+
+interface ClaudeStreamEvent {
+  type?: string; subtype?: string;
+  message?: { content?: Array<{ type?: string; text?: string; name?: string; input?: Record<string, unknown>; content?: Array<{ type?: string; text?: string }> }> };
+  model?: string; cwd?: string;
+  duration_ms?: number; num_turns?: number; total_cost_usd?: number;
+}
+
+/** One JSONL event → 0..N human-readable lines for the live feed. */
+function formatEvent(ev: ClaudeStreamEvent): string[] {
+  const out: string[] = [];
+  if (ev.type === 'system' && ev.subtype === 'init') {
+    out.push(`▶ session start · model=${ev.model ?? '?'} · cwd=${path.basename(ev.cwd ?? '')}`);
+    return out;
+  }
+  if (ev.type === 'result') {
+    const cost = typeof ev.total_cost_usd === 'number' ? `$${ev.total_cost_usd.toFixed(3)}` : '?';
+    const dur = ev.duration_ms ? `${Math.round(ev.duration_ms / 1000)}s` : '?';
+    out.push(`✓ done · turns=${ev.num_turns ?? '?'} · ${cost} · ${dur}`);
+    return out;
+  }
+  if (ev.type === 'assistant' && ev.message?.content) {
+    for (const item of ev.message.content) {
+      if (item.type === 'text' && item.text) {
+        const text = item.text.trim().replace(/\s+/g, ' ');
+        if (text) out.push(`💭 ${trunc(text, 160)}`);
+      } else if (item.type === 'tool_use') {
+        out.push(`🔧 ${item.name ?? '?'} ${summariseToolInput(item.name ?? '', item.input ?? {})}`);
+      }
+    }
+    return out;
+  }
+  if (ev.type === 'user' && ev.message?.content) {
+    for (const item of ev.message.content) {
+      if (item.type === 'tool_result' && item.content) {
+        const text = item.content.map((c) => c.text ?? '').join(' ').trim().replace(/\s+/g, ' ');
+        if (text) out.push(`  ↳ ${trunc(text, 120)}`);
+      }
+    }
+    return out;
+  }
+  return out;
+}
+
+/** Last N human-readable lines from a claude stream-json log file. */
+async function tailClaudeStream(logPath: string, maxLines: number): Promise<string> {
+  let raw: string;
+  try { raw = await fs.readFile(logPath, 'utf8'); } catch { return ''; }
+  const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+  const out: string[] = [];
+  // Parse a generous window from the end (events expand to multi-line, so over-read).
+  for (let i = Math.max(0, lines.length - maxLines * 3); i < lines.length; i++) {
+    try { out.push(...formatEvent(JSON.parse(lines[i]!) as ClaudeStreamEvent)); } catch { /* skip non-JSON */ }
+  }
+  return out.slice(-maxLines).join('\n');
+}
+
+/** Last N raw lines from a plain-text log (preview-up / preview-down output). */
+async function tailPlain(logPath: string, maxLines: number): Promise<string> {
+  let raw: string;
+  try { raw = await fs.readFile(logPath, 'utf8'); } catch { return ''; }
+  return raw.split('\n').filter((l) => l.length > 0).slice(-maxLines).join('\n');
+}
+
 export function mountRoutes(app: Hono, deps: RoutesDeps): void {
   const { store, linearRead, stateRoot, discussUrlScheme } = deps;
 
   app.get('/', async (c) => c.html(renderBoard(await store.list())));
+
+  /**
+   * Live feed for a task's currently-running agent/script. Polled by htmx every
+   * few seconds from the detail page (only while phase ∈ ACTIVE_RUN_PHASES).
+   * Returns a small <pre> with the tail of the run's log:
+   *  - claude-agent kinds (prep/execute/review/gapfix/closeout): parses
+   *    stream-json into human-readable lines (thoughts, tool uses, results).
+   *  - script kinds (preview/teardown): plain tail of the .log file.
+   * Returns "no active run" when currentRun is null.
+   */
+  app.get('/tasks/:id/live', async (c) => {
+    const t = await store.get(c.req.param('id'));
+    if (!t) return c.text('not found', 404);
+    if (!t.currentRun) return c.html('<p class=feed-empty>no active run</p>');
+    const logPath = path.join(taskDir(stateRoot, t.ticket), t.currentRun.log);
+    const isScript = t.currentRun.kind === 'preview' || t.currentRun.kind === 'teardown';
+    const body = isScript ? await tailPlain(logPath, 40) : await tailClaudeStream(logPath, 25);
+    if (body.length === 0) return c.html('<p class=feed-empty>log not started yet</p>');
+    return c.html(`<pre class=live-feed>${esc(body)}</pre>`);
+  });
 
   app.get('/tasks/:id', async (c) => {
     const t = await store.get(c.req.param('id'));
