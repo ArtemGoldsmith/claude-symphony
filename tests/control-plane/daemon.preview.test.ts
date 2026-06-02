@@ -92,6 +92,21 @@ describe('loadOpenQuestions / loadStage9', () => {
     expect(await loadOpenQuestions(fakeTask({}), root)).toBeNull();
   });
 
+  it('loadOpenQuestions accepts explicit options:null for bool/free questions (regression — Plan 5 prep prompt emits this)', async () => {
+    const dir = path.join(root, 'PIN-1'); await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'open-questions.json'), JSON.stringify({
+      items: [
+        { id: 'b', text: 'bool q', kind: 'bool', required: true, options: null },
+        { id: 'f', text: 'free q', kind: 'free', required: true, options: null },
+        { id: 'c', text: 'choice q', kind: 'choice', required: true, options: ['A', 'B'] },
+      ],
+    }), 'utf8');
+    const items = await loadOpenQuestions(fakeTask({}), root);
+    expect(items).toHaveLength(3);
+    expect(items![0]!.id).toBe('b');
+    expect(items![2]!.options).toEqual(['A', 'B']);
+  });
+
   it('loadStage9 parses a valid stage9.json and rejects malformed', async () => {
     const dir = path.join(root, 'PIN-1'); await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, 'stage9.json'),

@@ -30,7 +30,11 @@ export const OpenQuestionItemSchema = z.object({
   text: z.string(),
   kind: z.enum(['choice', 'free', 'bool']),
   required: z.boolean(),
-  options: z.array(z.string()).optional(),
+  // Accept both `undefined` and `null` — bool/free questions don't have
+  // options, and the prep prompt example emits the field as `"options": null`
+  // (not omitted). A bare .optional() would reject the explicit null and the
+  // whole array would fail to parse, silently dropping every question.
+  options: z.array(z.string()).nullable().optional(),
 });
 
 const OpenQuestionsSchema = z.object({
