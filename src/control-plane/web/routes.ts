@@ -272,11 +272,15 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
     const t = await store.get(c.req.param('id'));
     if (!t) return c.text('not found', 404);
     const dir = taskDir(stateRoot, t.ticket);
+    // Synth activity for the header strip — only when there's an active run.
+    const activity = t.currentRun && isActiveRunPhase(t.phase)
+      ? await synthesiseActivity(path.join(dir, t.currentRun.log), t.currentRun.kind)
+      : null;
     return c.html(renderDetail(t, {
       plan: await readOpt(path.join(dir, 'plan.md')),
       recap: await readOpt(path.join(dir, 'recap.md')),
       reviewFresh: await readOpt(path.join(dir, 'review-fresh.md')),
-    }));
+    }, activity ?? undefined));
   });
 
   app.post('/tasks', async (c) => {

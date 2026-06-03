@@ -120,6 +120,14 @@ button{cursor:pointer}
 .card-now{margin-top:.3rem;font-size:.72rem;color:#7ee787;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-left:2px solid #7ee787;padding-left:.4rem}
 .card-now[data-health=idle]{color:#e3b341;border-left-color:#e3b341}
 .card-now[data-health=stuck]{color:#f85149;border-left-color:#f85149}
+.detail-now{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem;margin:0 0 .8rem;padding:.55rem .75rem;background:#0f1115;border-left:3px solid #7ee787;border-radius:.3rem;font-size:.82rem}
+.detail-now[data-health=idle]{border-left-color:#e3b341}
+.detail-now[data-health=stuck]{border-left-color:#f85149}
+.detail-now-label{color:#8b93a7;text-transform:uppercase;font-size:.65rem;letter-spacing:.06em;font-weight:600}
+.detail-now-text{color:#c4cbdb;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.detail-now-elapsed{color:#8b93a7;font-variant-numeric:tabular-nums;font-size:.76rem}
+.detail-now-heartbeat{color:#8b93a7;font-variant-numeric:tabular-nums;font-size:.76rem}
+.detail-now[data-health=stuck] .detail-now-heartbeat{color:#f85149}
 @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 .live-feed{background:#0f1115;border:1px solid #232938;border-radius:.3rem;padding:.55rem .7rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.78rem;line-height:1.45;max-height:24rem;overflow-y:auto;margin:0;color:#c4cbdb;white-space:pre-wrap;word-break:break-word}
 .feed-empty{color:#5f677a;font-size:.82rem;font-style:italic;margin:0}
@@ -211,7 +219,7 @@ export interface DetailFiles {
   reviewFresh: string;
 }
 
-export function renderDetail(t: TaskRecord, files: DetailFiles): string {
+export function renderDetail(t: TaskRecord, files: DetailFiles, activity?: CardActivity): string {
   const p = projectTask(t);
   // Auto-refresh the detail every 8s while phase is active-run (agent owns the
   // transitions there — operator doesn't have forms to lose). For phases with
@@ -221,10 +229,21 @@ export function renderDetail(t: TaskRecord, files: DetailFiles): string {
   const detailPoll = isActiveRunPhase(p.phase)
     ? ` hx-get="/tasks/${esc(p.ticket)}" hx-trigger="every 8s" hx-select=".detail" hx-swap=outerHTML`
     : '';
+  // Activity strip directly under the phase line — surfaces "waiting on codex
+  // review", elapsed since spawn, and last-activity heartbeat right at the
+  // header so the operator doesn't have to scroll into the live-feed to know
+  // what the agent is currently doing.
+  const elapsedActive = isActiveRunPhase(p.phase) && t.currentRun
+    ? fmtElapsedShort(Math.max(0, Math.floor(Date.now() / 1000) - t.currentRun.spawnedAt))
+    : null;
+  const activityStrip = activity
+    ? `<div class=detail-now data-health="${activity.health}"><span class=detail-now-label>now</span><span class=detail-now-text>${esc(activity.now)}</span>${elapsedActive ? `<span class=detail-now-elapsed>${esc(elapsedActive)} active</span>` : ''}<span class=detail-now-heartbeat>last activity ${esc(activity.lastActivitySec < 60 ? `${activity.lastActivitySec}s` : `${Math.floor(activity.lastActivitySec / 60)}m ${activity.lastActivitySec % 60}s`)} ago</span></div>`
+    : '';
   const parts: string[] = [
     `${pageHead(`${p.ticket} · ${p.phase} — symphony`)}<div class=detail${detailPoll}><a href="/">&larr; board</a>`,
     `<h1>${esc(p.ticket)} — ${esc(p.title)}</h1>`,
     `<p>phase: <b>${esc(p.phase)}</b> · rev ${p.rev}${p.failedFrom && p.phase.endsWith('_failed') ? ` · failedFrom ${esc(p.failedFrom)}` : ''}</p>`,
+    activityStrip,
     p.operatorNote ? `<div class=op-note><h3>operator note</h3><div class=body>${esc(p.operatorNote)}</div></div>` : '',
     isActiveRunPhase(p.phase) ? `<div class=live-block><h3><span class=dot></span> live · ${esc(p.phase)}</h3><div id=live-feed hx-get="/tasks/${esc(p.ticket)}/live" hx-trigger="load, every 4s" hx-swap=innerHTML><p class=feed-empty>connecting…</p></div></div>` : '',
     renderDiscussPanel(t),
