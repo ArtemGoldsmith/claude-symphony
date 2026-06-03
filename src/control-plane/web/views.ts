@@ -110,6 +110,13 @@ button{cursor:pointer}
 .live-block{background:#171a21;border-radius:.4rem;padding:.6rem .8rem;margin:.6rem 0}
 .live-block h3{margin:0 0 .4rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8b93a7;display:flex;align-items:center;gap:.4rem}
 .live-block h3 .dot{width:.5rem;height:.5rem;border-radius:50%;background:#7aa2f7;animation:pulse 1.6s ease-in-out infinite}
+.live-meta{display:flex;justify-content:space-between;gap:1rem;font-size:.78rem;margin:0 0 .5rem;padding:.4rem .55rem;border-radius:.3rem;border-left:3px solid #7ee787;background:#0f1115}
+.live-meta[data-health=idle]{border-left-color:#e3b341}
+.live-meta[data-health=stuck]{border-left-color:#f85149}
+.live-now{color:#c4cbdb;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.live-heartbeat{color:#8b93a7;font-variant-numeric:tabular-nums}
+.live-meta[data-health=stuck] .live-heartbeat{color:#f85149}
+.card-elapsed{display:inline-block;margin-left:.4rem;padding:.05rem .35rem;background:#222732;color:#8b93a7;border-radius:.25rem;font-size:.7rem;font-weight:400;font-variant-numeric:tabular-nums}
 @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 .live-feed{background:#0f1115;border:1px solid #232938;border-radius:.3rem;padding:.55rem .7rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.78rem;line-height:1.45;max-height:24rem;overflow-y:auto;margin:0;color:#c4cbdb;white-space:pre-wrap;word-break:break-word}
 .feed-empty{color:#5f677a;font-size:.82rem;font-style:italic;margin:0}
@@ -136,9 +143,20 @@ button{cursor:pointer}
 .btn-secondary:hover{background:#2a3144;border-color:#3a4258}
 `;
 
+/** Human-friendly elapsed seconds: <60 → "Xs", <1h → "Xm", ≥1h → "Xh Ym". */
+function fmtElapsedShort(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
+}
+
 export function renderTaskCard(t: TaskRecord): string {
   const p = projectTask(t);
-  return `<a class=card href="/tasks/${esc(p.ticket)}"><b>${esc(p.ticket)}</b><div class=t>${esc(p.title)}</div></a>`;
+  // Elapsed badge for active-run phases — at-a-glance "is this taking long?".
+  const elapsedBadge = isActiveRunPhase(t.phase) && t.currentRun
+    ? ` <span class=card-elapsed>${fmtElapsedShort(Math.max(0, Math.floor(Date.now() / 1000) - t.currentRun.spawnedAt))}</span>`
+    : '';
+  return `<a class=card href="/tasks/${esc(p.ticket)}"><b>${esc(p.ticket)}${elapsedBadge}</b><div class=t>${esc(p.title)}</div></a>`;
 }
 
 export function renderBoard(tasks: TaskRecord[]): string {

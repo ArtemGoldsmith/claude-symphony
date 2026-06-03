@@ -143,6 +143,77 @@ async function tailPlain(logPath: string, maxLines: number): Promise<string> {
   return raw.split('\n').filter((l) => l.length > 0).slice(-maxLines).join('\n');
 }
 
+/** Human-friendly elapsed seconds. */
+function fmtAgo(sec: number): string {
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s ago`;
+  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m ago`;
+}
+
+/** Synthesised "now doing" + heartbeat for a currently-running task. */
+interface ActivitySynth {
+  now: string;
+  lastActivitySec: number;
+  health: 'fresh' | 'idle' | 'stuck';
+}
+
+/** Detect the agent's current activity from a tail of its stream-json log.
+ *  Walks backwards through events looking for the latest meaningful signal:
+ *  in-flight Bash with `codex exec` → "waiting on codex review", in-flight
+ *  bash poll loop → "waiting on background task", any other tool_use → its
+ *  name+summary, else the latest assistant text. Health classifies the file
+ *  mtime delta: <30s fresh / <2min idle / ≥2min stuck. */
+async function synthesiseActivity(
+  logPath: string, kind: string,
+): Promise<ActivitySynth | null> {
+  let st: import('node:fs').Stats;
+  try { st = await fs.stat(logPath); } catch { return null; }
+  const lastActivitySec = Math.max(0, Math.floor((Date.now() - st.mtimeMs) / 1000));
+  const health: ActivitySynth['health'] =
+    lastActivitySec < 30 ? 'fresh' : lastActivitySec < 120 ? 'idle' : 'stuck';
+
+  // Script kinds (preview/teardown): last non-empty log line is the signal.
+  if (kind === 'preview' || kind === 'teardown') {
+    const tail = await tailPlain(logPath, 1);
+    return { now: trunc(tail.trim() || 'running', 100), lastActivitySec, health };
+  }
+
+  // Claude kinds: parse stream-json + synthesise.
+  let raw: string;
+  try { raw = await fs.readFile(logPath, 'utf8'); } catch { return { now: 'starting…', lastActivitySec, health }; }
+  const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+  // Walk a generous window from the end (events can be spread across many lines).
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 40); i--) {
+    let ev: ClaudeStreamEvent;
+    try { ev = JSON.parse(lines[i]!) as ClaudeStreamEvent; } catch { continue; }
+    if (ev.type !== 'assistant' || !ev.message?.content) continue;
+    // Walk content backwards within this event (latest item wins).
+    for (let j = ev.message.content.length - 1; j >= 0; j--) {
+      const item = ev.message.content[j]!;
+      if (item.type === 'tool_use') {
+        const name = item.name ?? '?';
+        if (name === 'Bash' && typeof item.input?.command === 'string') {
+          const cmd = item.input.command;
+          if (/codex\s+exec/i.test(cmd)) return { now: 'waiting on codex review', lastActivitySec, health };
+          if ((/for\s+i\s+in\s+\$\(seq/.test(cmd) || /until\s+/.test(cmd)) && /sleep/.test(cmd)) {
+            return { now: 'waiting on background task', lastActivitySec, health };
+          }
+        }
+        const summary = summariseToolInput(name, item.input ?? {});
+        return { now: trunc(`${name}: ${summary}`, 100), lastActivitySec, health };
+      }
+      if (item.type === 'text' && item.text) {
+        const text = item.text.trim().replace(/\s+/g, ' ');
+        if (!text) continue;
+        const m = text.match(/Stage\s+([A-G])\b/);
+        if (m) return { now: `Stage ${m[1]}`, lastActivitySec, health };
+        return { now: trunc(text, 100), lastActivitySec, health };
+      }
+    }
+  }
+  return { now: 'thinking…', lastActivitySec, health };
+}
+
 export function mountRoutes(app: Hono, deps: RoutesDeps): void {
   const { store, linearRead, stateRoot } = deps;
 
@@ -166,9 +237,18 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
     if (!t.currentRun) return c.html('<p class=feed-empty>no active run</p>');
     const logPath = path.join(taskDir(stateRoot, t.ticket), t.currentRun.log);
     const isScript = t.currentRun.kind === 'preview' || t.currentRun.kind === 'teardown';
-    const body = isScript ? await tailPlain(logPath, 40) : await tailClaudeStream(logPath, 25);
-    if (body.length === 0) return c.html('<p class=feed-empty>log not started yet</p>');
-    return c.html(`<pre class=live-feed>${esc(body)}</pre>`);
+    const [body, activity] = await Promise.all([
+      isScript ? tailPlain(logPath, 40) : tailClaudeStream(logPath, 25),
+      synthesiseActivity(logPath, t.currentRun.kind),
+    ]);
+    // Heartbeat strip header: "now: <synth> · last activity Xs ago" — coloured
+    // by health so the operator can tell at a glance whether the run is still
+    // making progress or has gone quiet.
+    const meta = activity
+      ? `<div class=live-meta data-health="${activity.health}"><span class=live-now>now: ${esc(activity.now)}</span><span class=live-heartbeat>last activity ${esc(fmtAgo(activity.lastActivitySec))}</span></div>`
+      : '';
+    if (body.length === 0) return c.html(`${meta}<p class=feed-empty>log not started yet</p>`);
+    return c.html(`${meta}<pre class=live-feed>${esc(body)}</pre>`);
   });
 
   app.get('/tasks/:id', async (c) => {
