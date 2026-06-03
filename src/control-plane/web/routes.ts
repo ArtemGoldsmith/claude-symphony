@@ -10,7 +10,7 @@ import path from 'node:path';
 import type { Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
-import { isTerminalPhase } from '../phase.js';
+import { isActiveRunPhase, isTerminalPhase } from '../phase.js';
 import { StaleRevError, TaskExistsError, UnknownTaskError, type TaskStore } from '../task-store.js';
 import { taskDir } from '../task-record.js';
 import type { LinearReadGateway } from '../linear-read.js';
@@ -151,7 +151,7 @@ function fmtAgo(sec: number): string {
 }
 
 /** Synthesised "now doing" + heartbeat for a currently-running task. */
-interface ActivitySynth {
+export interface ActivitySynth {
   now: string;
   lastActivitySec: number;
   health: 'fresh' | 'idle' | 'stuck';
@@ -163,7 +163,7 @@ interface ActivitySynth {
  *  bash poll loop → "waiting on background task", any other tool_use → its
  *  name+summary, else the latest assistant text. Health classifies the file
  *  mtime delta: <30s fresh / <2min idle / ≥2min stuck. */
-async function synthesiseActivity(
+export async function synthesiseActivity(
   logPath: string, kind: string,
 ): Promise<ActivitySynth | null> {
   let st: import('node:fs').Stats;
@@ -220,7 +220,24 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
   mountStaticAssets(app, deps.staticRoot);
   deps.discussLease.mountRoutes?.(app); // optional — nullDiscussLease omits this method
 
-  app.get('/', async (c) => c.html(renderBoard(await store.list())));
+  app.get('/', async (c) => {
+    const tasks = await store.list();
+    // For each active-run task, compute the synth status so cards can show
+    // "now: waiting on codex review" alongside the elapsed badge. One file
+    // stat+read per active task per poll (~8s) — fine for the handful that
+    // run concurrently.
+    const activeTasks = tasks.filter((t) => t.currentRun && isActiveRunPhase(t.phase));
+    const synths = await Promise.all(
+      activeTasks.map(async (t) => {
+        const logPath = path.join(taskDir(stateRoot, t.ticket), t.currentRun!.log);
+        const a = await synthesiseActivity(logPath, t.currentRun!.kind);
+        return [t.ticket, a] as const;
+      }),
+    );
+    const activities = new Map<string, ActivitySynth>();
+    for (const [tk, a] of synths) if (a) activities.set(tk, a);
+    return c.html(renderBoard(tasks, activities));
+  });
 
   /**
    * Live feed for a task's currently-running agent/script. Polled by htmx every

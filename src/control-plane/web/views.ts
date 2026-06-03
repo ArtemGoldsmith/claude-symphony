@@ -117,6 +117,9 @@ button{cursor:pointer}
 .live-heartbeat{color:#8b93a7;font-variant-numeric:tabular-nums}
 .live-meta[data-health=stuck] .live-heartbeat{color:#f85149}
 .card-elapsed{display:inline-block;margin-left:.4rem;padding:.05rem .35rem;background:#222732;color:#8b93a7;border-radius:.25rem;font-size:.7rem;font-weight:400;font-variant-numeric:tabular-nums}
+.card-now{margin-top:.3rem;font-size:.72rem;color:#7ee787;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-left:2px solid #7ee787;padding-left:.4rem}
+.card-now[data-health=idle]{color:#e3b341;border-left-color:#e3b341}
+.card-now[data-health=stuck]{color:#f85149;border-left-color:#f85149}
 @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 .live-feed{background:#0f1115;border:1px solid #232938;border-radius:.3rem;padding:.55rem .7rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.78rem;line-height:1.45;max-height:24rem;overflow-y:auto;margin:0;color:#c4cbdb;white-space:pre-wrap;word-break:break-word}
 .feed-empty{color:#5f677a;font-size:.82rem;font-style:italic;margin:0}
@@ -150,21 +153,36 @@ function fmtElapsedShort(sec: number): string {
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
 }
 
-export function renderTaskCard(t: TaskRecord): string {
+/** "Now-doing" + heartbeat per ticket, supplied by the board route from
+ *  synthesiseActivity so board cards can surface live status alongside the
+ *  elapsed badge. Tickets without an active run are simply absent from the
+ *  map. */
+export interface CardActivity {
+  now: string;
+  lastActivitySec: number;
+  health: 'fresh' | 'idle' | 'stuck';
+}
+
+export function renderTaskCard(t: TaskRecord, activity?: CardActivity): string {
   const p = projectTask(t);
   // Elapsed badge for active-run phases — at-a-glance "is this taking long?".
   const elapsedBadge = isActiveRunPhase(t.phase) && t.currentRun
     ? ` <span class=card-elapsed>${fmtElapsedShort(Math.max(0, Math.floor(Date.now() / 1000) - t.currentRun.spawnedAt))}</span>`
     : '';
-  return `<a class=card href="/tasks/${esc(p.ticket)}"><b>${esc(p.ticket)}${elapsedBadge}</b><div class=t>${esc(p.title)}</div></a>`;
+  // Synthesised "now: ..." line — only on active-run phases with an activity
+  // sample available. Coloured by the health classifier (fresh / idle / stuck).
+  const nowLine = activity
+    ? `<div class=card-now data-health="${activity.health}">${esc(activity.now)}</div>`
+    : '';
+  return `<a class=card href="/tasks/${esc(p.ticket)}"><b>${esc(p.ticket)}${elapsedBadge}</b><div class=t>${esc(p.title)}</div>${nowLine}</a>`;
 }
 
-export function renderBoard(tasks: TaskRecord[]): string {
+export function renderBoard(tasks: TaskRecord[], activities?: ReadonlyMap<string, CardActivity>): string {
   const byPhase = new Map<Phase, TaskRecord[]>();
   for (const ph of ALL_PHASES) byPhase.set(ph, []);
   for (const t of tasks) byPhase.get(t.phase)!.push(t);
   const cols = ALL_PHASES.map((ph) => {
-    const cards = (byPhase.get(ph) ?? []).map(renderTaskCard).join('');
+    const cards = (byPhase.get(ph) ?? []).map((t) => renderTaskCard(t, activities?.get(t.ticket))).join('');
     return `<section class=col><h2>${esc(ph)}</h2>${cards}</section>`;
   }).join('');
   // .board polls itself every 8s — htmx hx-select picks the new .board out of the
@@ -206,7 +224,7 @@ export function renderDetail(t: TaskRecord, files: DetailFiles): string {
   const parts: string[] = [
     `${pageHead(`${p.ticket} · ${p.phase} — symphony`)}<div class=detail${detailPoll}><a href="/">&larr; board</a>`,
     `<h1>${esc(p.ticket)} — ${esc(p.title)}</h1>`,
-    `<p>phase: <b>${esc(p.phase)}</b> · rev ${p.rev}${p.failedFrom ? ` · failedFrom ${esc(p.failedFrom)}` : ''}</p>`,
+    `<p>phase: <b>${esc(p.phase)}</b> · rev ${p.rev}${p.failedFrom && p.phase.endsWith('_failed') ? ` · failedFrom ${esc(p.failedFrom)}` : ''}</p>`,
     p.operatorNote ? `<div class=op-note><h3>operator note</h3><div class=body>${esc(p.operatorNote)}</div></div>` : '',
     isActiveRunPhase(p.phase) ? `<div class=live-block><h3><span class=dot></span> live · ${esc(p.phase)}</h3><div id=live-feed hx-get="/tasks/${esc(p.ticket)}/live" hx-trigger="load, every 4s" hx-swap=innerHTML><p class=feed-empty>connecting…</p></div></div>` : '',
     renderDiscussPanel(t),

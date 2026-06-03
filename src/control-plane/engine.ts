@@ -316,7 +316,12 @@ export class Engine {
     await this.store.advance(ticket, {
       expectRev: t.rev, to,
       mutate: (r) => {
+        // failedFrom is set on a fresh failure, otherwise CLEARED on any
+        // transition that lands in a non-failed phase — otherwise a stale
+        // marker from an earlier `preview_failed` survives a successful
+        // re-prep and confuses the operator on `awaiting_approval`.
         if (failedFrom) r.failedFrom = failedFrom;
+        else if (!to.endsWith('_failed')) r.failedFrom = null;
         if (from === 'prepping' && to === 'awaiting_approval') {
           r.openQuestions = { rev: (t.openQuestions?.rev ?? 0) + 1, items: oqItems ?? [] };
           r.answers = null;
@@ -348,7 +353,7 @@ export class Engine {
         let stage9: TaskRecord['stage9'] = null;
         try { stage9 = await this.loadStage9(t); } catch { stage9 = null; }
         const loadedStage9 = stage9 ?? { attemptId: t.attempts.execute, gitSha: outcome.gitSha, items: [] };
-        mutate = (r) => { r.preview = { url: outcome!.url, gitSha: outcome!.gitSha, state: 'up' }; r.stage9 = loadedStage9; r.currentRun = null; };
+        mutate = (r) => { r.preview = { url: outcome!.url, gitSha: outcome!.gitSha, state: 'up' }; r.stage9 = loadedStage9; r.currentRun = null; r.failedFrom = null; };
       } else {
         to = 'preview_failed';
         // H1: record task.preview from the (possibly stuck) outcome so /teardown +
@@ -367,6 +372,7 @@ export class Engine {
           r.currentRun = null;
           r.teardownTarget = null;
           r.preview = null; // compute reclaimed (§8.3 M3)
+          r.failedFrom = null; // clear any stale failure marker on successful teardown
           if (target === 'abandoned') r.terminalReason = 'abandoned';
         };
       } else {
