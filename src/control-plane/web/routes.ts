@@ -227,7 +227,7 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
         r.answers = { questionsRev, planAckRev: r.answers?.planAckRev ?? null, values };
       });
     } catch (err) { return c.text('conflict', statusFor(err)); }
-    return c.text('saved', 200);
+    return hxRefresh(c);
   });
 
   app.post('/tasks/:id/approve', async (c) => {

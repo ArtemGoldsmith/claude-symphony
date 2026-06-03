@@ -210,18 +210,28 @@ export function renderDetail(t: TaskRecord, files: DetailFiles): string {
 function renderAnswerForm(p: ProjectedTask): string {
   const oq = p.openQuestions!;
   const hasItems = oq.items.length > 0;
+  // Pre-fill inputs from previously-saved answers (if their rev matches the
+  // current questions rev — stale answers from a prior re-prep are ignored).
+  const savedValues: Record<string, string> =
+    p.answers && p.answers.questionsRev === oq.rev ? p.answers.values : {};
   const fields = oq.items.map((q) => {
     const name = `q_${esc(q.id)}`;
+    const saved = savedValues[q.id] ?? '';
     let input: string;
     if (q.kind === 'choice' && q.options) {
-      input = `<select class=gate-input name="${name}">${q.options.map((o) => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}</select>`;
+      input = `<select class=gate-input name="${name}">${q.options.map((o) =>
+        `<option value="${esc(o)}"${o === saved ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
     } else if (q.kind === 'bool') {
-      input = `<select class=gate-input name="${name}"><option value=yes>yes</option><option value=no>no</option></select>`;
+      input = `<select class=gate-input name="${name}"><option value=yes${saved === 'yes' ? ' selected' : ''}>yes</option><option value=no${saved === 'no' ? ' selected' : ''}>no</option></select>`;
     } else {
-      input = `<textarea class=gate-input name="${name}" rows=2></textarea>`;
+      input = `<textarea class=gate-input name="${name}" rows=2>${esc(saved)}</textarea>`;
     }
     return `<p class=gate-q><label><span class=gate-q-text>${esc(q.text)}${q.required ? ' <span class=req>*</span>' : ''}</span>${input}</label></p>`;
   }).join('');
+  const answeredCount = Object.keys(savedValues).length;
+  const savedNote = answeredCount > 0
+    ? ` <span class=rev>(${answeredCount}/${oq.items.length} answered)</span>`
+    : '';
 
   // "What do I do now?" guidance — shown above the gates because the operator
   // landing on awaiting_approval needs a clear next-step framing.
@@ -232,8 +242,8 @@ function renderAnswerForm(p: ProjectedTask): string {
   // Three gates, visually separated as cards.
   const questionsCard = hasItems
     ? `<div class=gate-card>
-  <h3>1. answer open questions <span class=rev>(rev ${oq.rev})</span></h3>
-  <form hx-post="/tasks/${esc(p.ticket)}/answers" hx-swap=none>
+  <h3>1. answer open questions <span class=rev>(rev ${oq.rev})</span>${savedNote}</h3>
+  <form hx-post="/tasks/${esc(p.ticket)}/answers" hx-target=body>
     <input type=hidden name=questionsRev value="${oq.rev}">${fields}
     <button class=btn-secondary>save answers</button>
   </form>
