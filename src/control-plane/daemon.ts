@@ -92,11 +92,36 @@ export async function readPreviewOutcome(
   return { state, gitSha, url: previewUrl(pj), headMatches };
 }
 
-/** §8 guard: worktree clean (no uncommitted changes) AND HEAD != baseSha. */
+/** Per-spawn artefacts the daemon writes into the worktree itself (settings-
+ *  policy JSON, the PreToolUse guard symlink, etc.). They always show up as
+ *  untracked in `git status --porcelain` after a run and MUST be ignored by
+ *  the cleanliness check — otherwise `canPreview` rejects every well-behaved
+ *  agent run and the task lands in `execute_failed` after closeout. */
+const DAEMON_MANAGED_PATHS: ReadonlySet<string> = new Set([
+  '.claude/settings.json',
+]);
+
+/** Parse a single `git status --porcelain` line. Format is `XY path` where
+ *  `XY` are two status chars and `path` is everything after the space. A
+ *  rename appears as `R  old -> new`; we take the destination. */
+function porcelainPath(line: string): string {
+  const after = line.slice(3); // strip "XY "
+  const arrow = after.indexOf(' -> ');
+  return arrow >= 0 ? after.slice(arrow + 4) : after;
+}
+
+/** §8 guard: worktree clean (no uncommitted changes ignoring daemon-managed
+ *  artefacts) AND HEAD != baseSha.
+ *  `--untracked-files=all` forces per-file enumeration — without it git
+ *  collapses an entirely-new directory to one line (`?? .claude/`) and our
+ *  per-path filter can't decide whether daemon files are the only contents. */
 export async function canPreview(task: TaskRecord): Promise<boolean> {
   if (!task.worktree || !task.baseSha) return false;
-  const { stdout: status } = await execFileAsync('git', ['-C', task.worktree, 'status', '--porcelain']);
-  if (status.trim().length > 0) return false; // dirty → never preview uncommitted code
+  const { stdout: status } = await execFileAsync('git',
+    ['-C', task.worktree, 'status', '--porcelain', '--untracked-files=all']);
+  const dirty = status.split('\n').filter((l) => l.length > 0)
+    .filter((l) => !DAEMON_MANAGED_PATHS.has(porcelainPath(l)));
+  if (dirty.length > 0) return false; // real dirt → never preview uncommitted code
   const { stdout: head } = await execFileAsync('git', ['-C', task.worktree, 'rev-parse', 'HEAD']);
   return head.trim() !== task.baseSha; // must have at least one commit beyond base
 }
