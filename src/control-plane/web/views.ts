@@ -128,6 +128,17 @@ button{cursor:pointer}
 .detail-now-elapsed{color:#8b93a7;font-variant-numeric:tabular-nums;font-size:.76rem}
 .detail-now-heartbeat{color:#8b93a7;font-variant-numeric:tabular-nums;font-size:.76rem}
 .detail-now[data-health=stuck] .detail-now-heartbeat{color:#f85149}
+.danger-zone{margin-top:2rem;padding:.5rem .75rem;border:1px solid #3a1f24;border-radius:.4rem;background:#1a1115}
+.danger-zone>summary{cursor:pointer;color:#f85149;font-size:.85rem;font-weight:600;list-style:none}
+.danger-zone>summary::-webkit-details-marker{display:none}
+.danger-zone>summary::before{content:"▸ ";color:#f85149}
+.danger-zone[open]>summary::before{content:"▾ "}
+.danger-blurb{margin:.6rem 0;color:#c4cbdb;font-size:.8rem;line-height:1.5}
+.danger-label{display:block;margin:.5rem 0;font-size:.78rem;color:#c4cbdb}
+.danger-label code{background:#2a1418;color:#f85149;padding:.05rem .3rem;border-radius:.2rem}
+.danger-label input{margin-top:.3rem}
+.btn-danger{background:#5e1e25;color:#fff5f5;border:1px solid #8a2a30;padding:.5rem 1rem;border-radius:.4rem;font-size:.83rem;font-weight:600;cursor:pointer;transition:background .15s}
+.btn-danger:hover{background:#7a2630}
 @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 .live-feed{background:#0f1115;border:1px solid #232938;border-radius:.3rem;padding:.55rem .7rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.78rem;line-height:1.45;max-height:24rem;overflow-y:auto;margin:0;color:#c4cbdb;white-space:pre-wrap;word-break:break-word}
 .feed-empty{color:#5f677a;font-size:.82rem;font-style:italic;margin:0}
@@ -258,8 +269,25 @@ export function renderDetail(t: TaskRecord, files: DetailFiles, activity?: CardA
     if (p.stage9) parts.push(renderStage9(p));
   }
   if (p.phase.endsWith('_failed')) parts.push(renderRetry(p));
+  parts.push(renderDangerZone(t));
   parts.push(`</div>`);
   return parts.join('\n');
+}
+
+/** Nuclear-cancel UI — typed-confirm input + red button. POSTs to /tasks/:id/purge
+ *  which kills any live process, tears down docker stacks, removes the worktree
+ *  + agent branch, wipes the state-dir. Page reloads to the board afterwards. */
+function renderDangerZone(t: TaskRecord): string {
+  return `<details class=danger-zone>
+  <summary>delete this task completely</summary>
+  <p class=danger-blurb>Removes the state-dir, kills any running process, tears down the preview + agent docker stacks, deletes the git worktree (force — uncommitted changes are lost), and removes the agent branch. No undo.</p>
+  <form hx-post="/tasks/${esc(t.ticket)}/purge" hx-target=body>
+    <label class=danger-label>type <code>${esc(t.ticket)}</code> to confirm
+      <input type=text name=confirm class=gate-input placeholder="${esc(t.ticket)}" required autocomplete=off>
+    </label>
+    <button class=btn-danger>delete completely</button>
+  </form>
+</details>`;
 }
 
 function renderAnswerForm(p: ProjectedTask): string {

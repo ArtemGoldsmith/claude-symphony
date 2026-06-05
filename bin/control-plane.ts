@@ -46,6 +46,7 @@ async function main(): Promise<void> {
   const handle = await bootControlPlane(config, { logger, ownerGen, store, discussLease });
   const web = startWebServer(config, {
     store: handle.store, linearRead: handle.linearRead, token, discussLease, cfg: config.web,
+    purgeTask: handle.purgeTask,
   });
   logger.info({ kind: 'web', bind: `${config.web.bind_host}:${config.web.port}` }, 'control-plane board listening');
 

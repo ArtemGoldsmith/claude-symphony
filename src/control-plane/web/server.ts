@@ -34,6 +34,7 @@ export function startWebServer(
   deps: {
     store: TaskStore; linearRead: LinearReadGateway; token: string;
     discussLease?: DiscussLease; cfg?: ControlPlaneConfig['web'];
+    purgeTask?: (t: import('../task-record.js').TaskRecord) => Promise<void>;
   },
 ): WebServer {
   const staticRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'static');
@@ -44,6 +45,7 @@ export function startWebServer(
     token: deps.token,
     staticRoot,
     discussLease: deps.discussLease ?? nullDiscussLease,
+    ...(deps.purgeTask ? { purgeTask: deps.purgeTask } : {}),
   });
   // WS upgrade lane: when discuss_terminal is enabled, @hono/node-server's adapter
   // needs a `ws.WebSocketServer({ noServer: true })` so server.on('upgrade') routes

@@ -162,11 +162,67 @@ async function forceDownAgentStack(ticket: string, log: (m: string, meta?: Recor
   } catch (err) { log('force-down rm failed (ignored)', { ticket, error: (err as Error).message }); }
 }
 
+/** Nuclear cancel — remove every trace of the task: kill any live process
+ *  group, tear down preview + agent docker stacks, remove the git worktree
+ *  and agent branch, wipe the state-dir. Every step is best-effort: a
+ *  failure in one (e.g. docker not running, worktree already gone, branch
+ *  unmerged) is logged but does NOT block the rest — the operator pressed
+ *  "delete completely" because they want this gone, not a partial recovery. */
+export async function purgeTask(
+  task: TaskRecord,
+  config: ControlPlaneConfig,
+  pm: ProcessManager,
+  log: (msg: string, meta?: Record<string, unknown>) => void,
+): Promise<void> {
+  const ticket = task.ticket;
+  // 1. Kill any live wrapper (and its child claude/script via PGID).
+  if (task.currentRun?.pid != null) {
+    try { process.kill(-task.currentRun.pid, 'SIGKILL'); }
+    catch (err) { log('purge: pgkill failed (ignored)', { ticket, pid: task.currentRun.pid, error: (err as Error).message }); }
+  }
+  // 2. Preview compute teardown via the configured script (idempotent / always exit 0 per §8).
+  try {
+    await execFileAsync(config.preview.down_script, [ticket],
+      { env: pm.buildScriptEnv(config.preview.extra_env), timeout: 90_000, killSignal: 'SIGKILL' });
+  } catch (err) { log('purge: preview-down script failed (ignored)', { ticket, error: (err as Error).message }); }
+  // 3. Force-down the agent's transient pinley-pin-NNN stack too (no preview script for it).
+  await forceDownAgentStack(ticket, log);
+  // 4. Force-down the preview's pinley-preview-pin-NNN stack belt-and-suspenders (script above
+  //    handles it but only after the noop-ack check — a half-built stack can survive).
+  const previewProject = `pinley-preview-${ticket.toLowerCase()}`;
+  try { await execFileAsync('docker', ['compose', '-p', previewProject, 'down', '--remove-orphans'], { timeout: 60_000, killSignal: 'SIGKILL' }); }
+  catch (err) { log('purge: preview stack down failed (ignored)', { ticket, error: (err as Error).message }); }
+  // 5. Remove the git worktree (uncommitted changes are nuked by --force).
+  if (task.worktree) {
+    try {
+      await execFileAsync('git', ['-C', config.workspace.repo, 'worktree', 'remove', '--force', task.worktree],
+        { timeout: 30_000 });
+    } catch (err) { log('purge: worktree remove failed (ignored)', { ticket, worktree: task.worktree, error: (err as Error).message }); }
+    // Also nuke the directory if `git worktree remove` left anything behind.
+    try { await fs.rm(task.worktree, { recursive: true, force: true }); }
+    catch (err) { log('purge: worktree rm -rf failed (ignored)', { ticket, error: (err as Error).message }); }
+  }
+  // 6. Delete the agent branch — possibly unmerged so use -D.
+  if (task.branch) {
+    try {
+      await execFileAsync('git', ['-C', config.workspace.repo, 'branch', '-D', task.branch],
+        { timeout: 30_000 });
+    } catch (err) { log('purge: branch delete failed (ignored)', { ticket, branch: task.branch, error: (err as Error).message }); }
+  }
+  // 7. Wipe the state-dir (task.json + every artefact). The next store.list() will
+  //    no longer surface this ticket; UI naturally drops it from the board.
+  const dir = taskDir(config.state_root, ticket);
+  try { await fs.rm(dir, { recursive: true, force: true }); }
+  catch (err) { log('purge: state-dir rm failed (ignored)', { ticket, dir, error: (err as Error).message }); }
+}
+
 export interface ControlPlaneHandle {
   engine: Engine;
   store: TaskStore;
   linearRead: LinearReadGateway;
   stop: () => Promise<void>;
+  /** Nuclear cancel — kills processes, tears down stacks, wipes state-dir + worktree + branch. */
+  purgeTask: (t: TaskRecord) => Promise<void>;
 }
 
 export interface BootControlPlaneDeps {
@@ -430,5 +486,6 @@ export async function bootControlPlane(
       await discussLease.shutdown();
       await lock.release();
     },
+    purgeTask: (t: TaskRecord) => purgeTask(t, config, pm, deps.logger.warn.bind(deps.logger)),
   };
 }

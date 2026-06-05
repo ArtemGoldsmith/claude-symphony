@@ -24,6 +24,10 @@ export interface RoutesDeps {
   stateRoot: string;
   staticRoot: string;
   discussLease: DiscussLease;
+  /** Nuclear-cancel hook injected by bootControlPlane. Kills any live wrapper,
+   *  tears down preview/agent docker stacks, removes the worktree + branch,
+   *  wipes the state-dir. Best-effort throughout. */
+  purgeTask?: (t: import('../task-record.js').TaskRecord) => Promise<void>;
 }
 
 async function readOpt(p: string): Promise<string> {
@@ -438,5 +442,25 @@ export function mountRoutes(app: Hono, deps: RoutesDeps): void {
       await store.updateRun(id, formRev(body), (r) => { r.retryRequested = true; });
     } catch (err) { return c.text('conflict', statusFor(err)); }
     return hxRefresh(c);
+  });
+
+  /**
+   * Nuclear cancel — typed-confirm required, then kill anything live and wipe
+   * every trace of the task (worktree, branch, docker stacks, state-dir).
+   * Best-effort throughout — failures are logged but never block the wipe.
+   * Disabled (404) when `purgeTask` isn't wired (e.g. tests without daemon deps).
+   */
+  app.post('/tasks/:id/purge', async (c) => {
+    if (!deps.purgeTask) return c.text('purge not wired', 404);
+    const id = c.req.param('id');
+    const t = await store.get(id);
+    if (!t) return c.text('not found', 404);
+    const body = await c.req.parseBody();
+    if (String(body.confirm ?? '') !== id) return c.text(`type the ticket id (${id}) to confirm`, 400);
+    await deps.purgeTask(t);
+    // Page reload — the detail handler will 404 since the state-dir is gone,
+    // and the board (auto-polled) drops the row on the next 8s tick.
+    c.header('HX-Redirect', '/');
+    return c.body(null, 200);
   });
 }
