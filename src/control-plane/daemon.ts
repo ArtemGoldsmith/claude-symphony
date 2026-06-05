@@ -172,6 +172,7 @@ export async function purgeTask(
   task: TaskRecord,
   config: ControlPlaneConfig,
   pm: ProcessManager,
+  store: TaskStore,
   log: (msg: string, meta?: Record<string, unknown>) => void,
 ): Promise<void> {
   const ticket = task.ticket;
@@ -209,11 +210,14 @@ export async function purgeTask(
         { timeout: 30_000 });
     } catch (err) { log('purge: branch delete failed (ignored)', { ticket, branch: task.branch, error: (err as Error).message }); }
   }
-  // 7. Wipe the state-dir (task.json + every artefact). The next store.list() will
-  //    no longer surface this ticket; UI naturally drops it from the board.
+  // 7. Wipe the state-dir (task.json + every artefact).
   const dir = taskDir(config.state_root, ticket);
   try { await fs.rm(dir, { recursive: true, force: true }); }
   catch (err) { log('purge: state-dir rm failed (ignored)', { ticket, dir, error: (err as Error).message }); }
+  // 8. Evict from the in-memory store cache so list()/get() stop surfacing it.
+  //    Without this the ticket would re-appear on the board on the next poll
+  //    despite the state-dir being gone (the cache is authoritative for reads).
+  store.evict(ticket);
 }
 
 export interface ControlPlaneHandle {
@@ -486,6 +490,6 @@ export async function bootControlPlane(
       await discussLease.shutdown();
       await lock.release();
     },
-    purgeTask: (t: TaskRecord) => purgeTask(t, config, pm, deps.logger.warn.bind(deps.logger)),
+    purgeTask: (t: TaskRecord) => purgeTask(t, config, pm, store, deps.logger.warn.bind(deps.logger)),
   };
 }

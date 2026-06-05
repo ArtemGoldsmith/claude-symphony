@@ -242,6 +242,21 @@ export class TaskStore {
     );
   }
 
+  /**
+   * Nuclear evict: drop the cached record so subsequent list()/get() never
+   * surface the ticket again. Idempotent — no-op when the ticket isn't cached.
+   * Skips the per-task queue intentionally — purgeTask just wiped the state-dir
+   * + killed any wrapper, so there's nothing left for queued operations to
+   * meaningfully complete; letting the next caller see "unknown task" via
+   * cache miss is the correct outcome.
+   *
+   * `archive()` is the legal, terminal-only path; this method is the operator's
+   * "delete completely" escape hatch and accepts any phase.
+   */
+  evict(ticket: string): void {
+    this.cache.delete(ticket);
+  }
+
   /** Atomically write the roll-up index (tmp + rename). */
   async saveSnapshot(): Promise<void> {
     const index: SnapshotIndex = {
